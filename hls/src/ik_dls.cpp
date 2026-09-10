@@ -22,13 +22,13 @@ int iks::dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
              ik_real_t q[IK_DOF], int *iters, ik_real_t *resid)
 {
 #pragma HLS INLINE off
-    /* Three sequential, non-overlapping calls to mm::multiply() below
-     * (A=JJ^T, U, DQ) were each getting their own synthesized instance
-     * (multiply/multiply_1/multiply_2 in the HLS report) instead of sharing
-     * one - HLS does not automatically share hardware across straight-line
-     * call sites to a non-inlined function the way it does for calls inside
-     * a loop. Force it: these calls never need to run concurrently. */
-#pragma HLS ALLOCATION type=function instances=mm::multiply limit=1
+    /* mm::multiply() is called three times below (A=JJ^T, U, DQ). Straight-
+     * line calls to a non-inlined function are not automatically shared by
+     * Vitis HLS the way calls inside a loop are - #pragma HLS ALLOCATION
+     * instances=... limit=1 does not enforce this in this release either
+     * (tried, verified no effect on the synthesised instance count). U and
+     * DQ's calls are routed through a shared loop below instead; A=JJ^T
+     * can't join them because mi::invert() must run in between. */
 
 DLS_SEED:
     for (int i = 0; i < IK_DOF; i++) {
@@ -107,8 +107,24 @@ DLS_EVEC:
 
         ik_real_t U[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t DQ[IK_MAT_MAX][IK_MAT_MAX];
-        mm::multiply(Ainv, E, IK_DOF, IK_DOF, 1, false, false, U);
-        mm::multiply(J, U, IK_DOF, IK_DOF, 1, true, false, DQ);
+
+        /* U = Ainv*E, then DQ = J^T*U: two sequential calls to
+         * mm::multiply() that were synthesising as two separate 24-DSP
+         * instances (three, counting A=JJ^T above) instead of sharing one -
+         * an ALLOCATION limit on mm::multiply did not take effect in this
+         * Vitis release. Route both through a single call site inside a
+         * loop instead, the same pattern that already shares dh_step()
+         * across fk()/rot03()/fk_jacobian(). */
+        const ik_real_t (*mulA[2])[IK_MAT_MAX] = { Ainv, J };
+        const ik_real_t (*mulB[2])[IK_MAT_MAX] = { E,    U };
+        ik_real_t       (*mulC[2])[IK_MAT_MAX] = { U,    DQ };
+        const bool mulTa[2] = { false, true };
+UDQ:
+        for (int s = 0; s < 2; s++) {
+#pragma HLS PIPELINE off
+            mm::multiply(mulA[s], mulB[s], IK_DOF, IK_DOF, 1,
+                        mulTa[s], false, mulC[s]);
+        }
 
         /* Wrapping each update keeps the joint state inside the CORDIC range
          * checked in ik_math.hpp.  FK is 2*pi-periodic so this cannot change
