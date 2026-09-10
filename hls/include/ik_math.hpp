@@ -88,7 +88,12 @@ WRAP:
 /* ------------------------------------------------------------------ */
 inline void sincos(ik_real_t angle, ik_real_t &sin_o, ik_real_t &cos_o)
 {
-#pragma HLS INLINE
+    /* INLINE off, unlike the trivial helpers above: this holds the 24-cycle
+     * CORDIC engine, and iks::analytic() alone has roughly a dozen call
+     * sites into this and atan2_hypot() below. Inlined, each one would get
+     * its own copy of the engine even after rolling its loop; off, every
+     * call site shares one synthesized instance and just queues for it. */
+#pragma HLS INLINE off
     cordic_t z = (cordic_t)angle;
     bool negate = false;
 
@@ -141,7 +146,7 @@ ROT:
 inline void atan2_hypot(ik_real_t yi, ik_real_t xi,
                         ik_real_t &ang_o, ik_real_t &mag_o)
 {
-#pragma HLS INLINE
+#pragma HLS INLINE off   /* shared CORDIC engine - see sincos() above */
     cordic_t x = (cordic_t)xi;
     cordic_t y = (cordic_t)yi;
     cordic_t z = 0;
@@ -202,7 +207,7 @@ inline ik_real_t hypot(ik_real_t x, ik_real_t y)
 /* ------------------------------------------------------------------ */
 inline ik_real_t sqrt(ik_real_t a)
 {
-#pragma HLS INLINE
+#pragma HLS INLINE off   /* shared 24-cycle engine - see sincos() above */
     if (a <= (ik_real_t)0)
         return (ik_real_t)0;
 
@@ -255,7 +260,7 @@ inline uint64_t acc_raw(ik_acc_t a)
 
 inline ik_real_t sqrt_acc(ik_acc_t a)
 {
-#pragma HLS INLINE
+#pragma HLS INLINE off   /* shared 32-cycle engine - see sincos() above */
     if (a <= (ik_acc_t)0)
         return (ik_real_t)0;
 
