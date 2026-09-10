@@ -115,7 +115,13 @@ FK_I:
         }
     }
 FK_CHAIN:
+    /* Vitis HLS auto-pipelines small loops with no explicit directive, and
+     * pipelining this one would force dh_step()'s already-rolled internal
+     * matrix multiply to flatten (fully unroll) to fit the schedule -
+     * exactly the resource explosion the rolling fix was for. Keep it
+     * sequential explicitly rather than relying on the tool's default. */
     for (int i = 0; i < IK_DOF; i++) {
+#pragma HLS PIPELINE off
         dh_step(i, q[i], R, p);
     }
 }
@@ -137,7 +143,8 @@ R3_I:
         }
     }
 R3_CHAIN:
-    for (int i = 0; i < 3; i++) {
+    for (int i = 0; i < 3; i++) {   /* PIPELINE off - see fk()'s FK_CHAIN */
+#pragma HLS PIPELINE off
         dh_step(i, th[i], R, p);
     }
 }
@@ -165,7 +172,8 @@ JC_I:
     /* Joint i rotates about z_{i-1}, anchored at o_{i-1}: capture the frame
      * BEFORE applying step i. */
 JC_CHAIN:
-    for (int i = 0; i < IK_DOF; i++) {
+    for (int i = 0; i < IK_DOF; i++) {   /* PIPELINE off - see fk()'s FK_CHAIN */
+#pragma HLS PIPELINE off
         zax[i][0] = Rc[0][2];
         zax[i][1] = Rc[1][2];
         zax[i][2] = Rc[2][2];
