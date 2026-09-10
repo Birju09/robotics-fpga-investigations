@@ -45,10 +45,19 @@ typedef ap_fixed<32, 16, AP_RND, AP_SAT> ik_real_t;
 /*
  * MAC accumulator.  A product of two Q16.16 values is exactly Q32.32, and the
  * longest dot product here is 6 terms, so Q32.32 accumulates the whole thing
- * without a single rounding step.  Rounding happens once, on the way out.
- * This is what makes the C++ bit-comparable to the Python model.
+ * without a single rounding step - by construction, this type never actually
+ * needs to round or saturate internally.  Rounding happens once, on the way
+ * out, through the (ik_real_t) cast, which does carry AP_RND/AP_SAT.
+ *
+ * It was nonetheless declared AP_RND/AP_SAT itself, which means every one of
+ * the many acc += ... accumulation steps throughout the kernels synthesises a
+ * rounding adder and a saturating comparator that can never fire - dead
+ * hardware, paid for at every call site, on the widest type in the design.
+ * AP_TRN/AP_WRAP cost nothing extra when the value is already exact and in
+ * range, which it provably is here; the true precision/safety-critical
+ * requirements live entirely in ik_real_t above and are unaffected by this.
  */
-typedef ap_fixed<64, 32, AP_RND, AP_SAT> ik_acc_t;
+typedef ap_fixed<64, 32, AP_TRN, AP_WRAP> ik_acc_t;
 
 #endif
 
