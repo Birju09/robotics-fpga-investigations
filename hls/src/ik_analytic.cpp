@@ -75,13 +75,12 @@ AN_WC:
 
     ik_real_t R36[3][3];
 AN_R36_R:
+    /* Rolled - a fully unrolled 3x3x3 costs 27 multipliers with zero
+     * reuse for a one-shot computation; see ik_math.hpp's sincos(). */
     for (int i = 0; i < 3; i++) {
-#pragma HLS UNROLL
         for (int j = 0; j < 3; j++) {
-#pragma HLS UNROLL
             ik_acc_t acc = (ik_acc_t)0;
             for (int k = 0; k < 3; k++) {
-#pragma HLS UNROLL
                 acc += (ik_acc_t)(R03[k][i] * Rd[k][j]);   /* transpose of R03 */
             }
             R36[i][j] = (ik_real_t)acc;

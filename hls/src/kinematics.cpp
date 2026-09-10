@@ -35,26 +35,25 @@ static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3])
     /* p <- p + R * ap   (must use the pre-update R) */
     ik_real_t np[3];
 DH_P:
+    /* Rolled, like the CORDIC loops above: one multiplier reused nine
+     * times costs far less silicon than nine instantiated in parallel,
+     * and this runs once per joint in an already CORDIC-dominated latency
+     * budget. */
     for (int r = 0; r < 3; r++) {
-#pragma HLS UNROLL
         ik_acc_t acc = (ik_acc_t)p[r];
         for (int c = 0; c < 3; c++) {
-#pragma HLS UNROLL
             acc += (ik_acc_t)(R[r][c] * ap[c]);
         }
         np[r] = (ik_real_t)acc;
     }
 
-    /* R <- R * AR */
+    /* R <- R * AR, rolled - see DH_P above. */
     ik_real_t nR[3][3];
 DH_R:
     for (int r = 0; r < 3; r++) {
-#pragma HLS UNROLL
         for (int c = 0; c < 3; c++) {
-#pragma HLS UNROLL
             ik_acc_t acc = (ik_acc_t)0;
             for (int k = 0; k < 3; k++) {
-#pragma HLS UNROLL
                 acc += (ik_acc_t)(R[r][k] * AR[k][c]);
             }
             nR[r][c] = (ik_real_t)acc;
@@ -215,15 +214,14 @@ PE_POS:
         e[r] = (ik_real_t)((ik_acc_t)pd[r] - (ik_acc_t)pc[r]);
     }
 
-    /* eo = 0.5 * sum over the three column pairs of (current x desired) */
+    /* eo = 0.5 * sum over the three column pairs of (current x desired),
+     * rolled - see dh_step()'s DH_P/DH_R in this file. */
 PE_ROT:
     for (int r = 0; r < 3; r++) {
-#pragma HLS UNROLL
         int a = (r + 1) % 3;
         int b = (r + 2) % 3;
         ik_acc_t acc = (ik_acc_t)0;
         for (int k = 0; k < 3; k++) {
-#pragma HLS UNROLL
             acc += (ik_acc_t)(Rc[a][k] * Rd[b][k]);
             acc -= (ik_acc_t)(Rc[b][k] * Rd[a][k]);
         }
