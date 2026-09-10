@@ -114,16 +114,37 @@ DLS_EVEC:
          * an ALLOCATION limit on mm::multiply did not take effect in this
          * Vitis release. Route both through a single call site inside a
          * loop instead, the same pattern that already shares dh_step()
-         * across fk()/rot03()/fk_jacobian(). */
-        const ik_real_t (*mulA[2])[IK_MAT_MAX] = { Ainv, J };
-        const ik_real_t (*mulB[2])[IK_MAT_MAX] = { E,    U };
-        ik_real_t       (*mulC[2])[IK_MAT_MAX] = { U,    DQ };
+         * across fk()/rot03()/fk_jacobian(). Vitis HLS does not support
+         * arrays of pointers ("pointer to pointer") for synthesis, so the
+         * operands are muxed by value into fixed staging buffers rather
+         * than selected by an array of pointers. */
+        ik_real_t stageA[IK_MAT_MAX][IK_MAT_MAX];
+        ik_real_t stageB[IK_MAT_MAX][IK_MAT_MAX];
+        ik_real_t stageC[IK_MAT_MAX][IK_MAT_MAX];
         const bool mulTa[2] = { false, true };
 UDQ:
         for (int s = 0; s < 2; s++) {
 #pragma HLS PIPELINE off
-            mm::multiply(mulA[s], mulB[s], IK_DOF, IK_DOF, 1,
-                        mulTa[s], false, mulC[s]);
+UDQ_IN:
+            for (int r = 0; r < IK_MAT_MAX; r++) {
+#pragma HLS UNROLL
+                for (int c = 0; c < IK_MAT_MAX; c++) {
+#pragma HLS UNROLL
+                    stageA[r][c] = (s == 0) ? Ainv[r][c] : J[r][c];
+                    stageB[r][c] = (s == 0) ? E[r][c]    : U[r][c];
+                }
+            }
+            mm::multiply(stageA, stageB, IK_DOF, IK_DOF, 1,
+                        mulTa[s], false, stageC);
+UDQ_OUT:
+            for (int r = 0; r < IK_MAT_MAX; r++) {
+#pragma HLS UNROLL
+                for (int c = 0; c < IK_MAT_MAX; c++) {
+#pragma HLS UNROLL
+                    if (s == 0) U[r][c]  = stageC[r][c];
+                    else        DQ[r][c] = stageC[r][c];
+                }
+            }
         }
 
         /* Wrapping each update keeps the joint state inside the CORDIC range
