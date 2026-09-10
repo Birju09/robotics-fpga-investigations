@@ -120,8 +120,9 @@ make -C hls syn
 make -C hls reports        # latency + utilisation summary
 make -C hls ip
 
-# 3. hardware — defaults to mat_mul_kernel + mat_inv_kernel + ik_analytic_kernel
-#    (ik_dls_kernel does not fit the xc7z020 standalone yet; see Status)
+# 3. hardware — defaults to ik_analytic_kernel alone; the xc7z020's 220 DSPs
+#    do not hold more than that (see Status).  Other combinations:
+#      ... -tclargs --kernels mat_mul_kernel,mat_inv_kernel
 vivado -mode batch -source scripts/build_vivado.tcl
 
 # 4. register map, then the application
@@ -192,8 +193,10 @@ separately. `model/ik_model.elbow_conditioning()` computes the number.
 argument writes, `ap_start`, the poll loop, result reads. That is what a control
 loop experiences.
 
-Scope is currently `ik_analytic` (plus the standalone `mat_mul`/`mat_inv` IPs)
-only — see Status below for why `ik_dls` is not in the harness yet.
+Scope is currently `ik_analytic` only — see Status below. The harness still
+contains the `mat_mul`/`mat_inv` section and runs it whenever those IPs are in
+the bitstream; with the default kernel set they are not, and it says so in the
+report rather than silently omitting the rows.
 
 It is deliberately *not* the same number Vitis HLS reports. The HLS latency is
 PL cycles between `ap_start` and `ap_done`; it excludes roughly 20 single-beat
@@ -244,14 +247,25 @@ standalone but still does not fit — `mi::invert()`'s cost alone (96 DSP)
 matches the standalone `mat_inv_kernel`, and appears to be close to the
 practical floor without a larger architectural change.
 
-Given that, the default `scripts/build_vivado.tcl` build and the
-`sw/src/main.c` benchmarking harness are scoped to `mat_mul_kernel`,
-`mat_inv_kernel` and `ik_analytic_kernel` for now, so a real bitstream and
-on-target PS/PL numbers are obtainable. `ik_dls`'s HLS sources, driver code
-(`ik_driver.c`, `ik_sw_ref.cpp`) and register map are all still in place;
-`--kernels` on `build_vivado.tcl` can add `ik_dls_kernel` back in (alone or
-otherwise) once its resource fit is resolved or if you want to characterise
-it in isolation regardless of fit.
+LUT pressure is gone; **DSP is now the only binding constraint**, and it is
+binding tightly. A build of `ik_analytic_kernel` plus the two standalone
+matrix IPs came to 230 DSP against the xc7z020's 220 — ten over, and
+`place_design` will not run at all when it is over, so there is no partial
+result to look at. The default kernel set is therefore `ik_analytic_kernel`
+alone, which is what the PS-vs-PL comparison actually needs.
+
+Nothing was deleted to get there. `ik_dls` and the matrix IPs keep their HLS
+sources, driver code (`ik_driver.c`, `ik_sw_ref.cpp`) and register map, and
+`--kernels` builds any combination you want — `mat_mul_kernel,mat_inv_kernel`
+to characterise the primitives in their own bitstream, or `ik_dls_kernel`
+alone if you want its numbers on a device that fits it. `sw/src/main.c`
+compiles its matrix section out when those IPs are absent, so no source edit
+is needed to switch.
+
+`build_vivado.tcl` now always prints `report_utilization -hierarchical` after
+synthesis. The `UTLZ-1` DRC error only reports a whole-device total, which
+tells you that you are over budget but not which kernel spent it; the
+per-kernel table is the thing you actually need and it is free to emit.
 
 Not yet run to completion on real hardware — co-simulation and the on-target
 measurements themselves. The code is staged so that

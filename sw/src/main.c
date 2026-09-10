@@ -285,6 +285,10 @@ int main(void)
     if (MATMUL_BASE && MATINV_BASE) {
         samp_report("mat_mul 6x6x6 (PL)", &s_mm);
         samp_report("mat_inv 6x6   (PL)", &s_mi);
+    } else {
+        /* Say so rather than silently omitting the rows - a missing section
+         * otherwise reads as a measurement that came out empty. */
+        xil_printf("  mat_mul / mat_inv    not in this bitstream (skipped)\r\n");
     }
 
     xil_printf("\r\n");

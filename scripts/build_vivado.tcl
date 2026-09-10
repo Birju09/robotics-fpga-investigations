@@ -29,12 +29,18 @@ set hls_dir   $root_dir/hls/build
 set run_bit   1
 set jobs      8
 
-# ik_dls_kernel does not fit on the xc7z020 yet even after resource-sharing
-# work (still ~126% DSP utilisation standalone) - default to the three
-# kernels that do, so a bitstream and real on-target numbers are obtainable
-# now.  Pass --kernels to override, e.g. once ik_dls fits or to build it in
-# isolation: --kernels ik_dls_kernel
-set kernels {mat_mul_kernel mat_inv_kernel ik_analytic_kernel}
+# The xc7z020 has 220 DSP48E1 and that is the binding constraint here.
+# ik_dls_kernel alone needs ~126% of them; ik_analytic_kernel plus the two
+# standalone matrix IPs came to 230, ten over.  Default to ik_analytic_kernel
+# on its own so a bitstream and real on-target PS-vs-PL numbers are
+# obtainable now.  Pass --kernels to build any other combination, e.g.
+#   --kernels mat_mul_kernel,mat_inv_kernel
+# to characterise the matrix primitives in their own bitstream.
+#
+# sw/src/main.c needs no matching edit: its MATMUL_BASE/MATINV_BASE guards
+# fall back to 0 when those IPs are absent from xparameters.h and the matrix
+# section compiles out.
+set kernels {ik_analytic_kernel}
 
 # ---------------------------------------------------------------- args ----
 for {set i 0} {$i < $argc} {incr i} {
@@ -186,6 +192,20 @@ add_files -norecurse [file join $build_dir $proj_name.gen sources_1 bd \
                           $bd_name hdl ${bd_name}_wrapper.v]
 set_property top ${bd_name}_wrapper [current_fileset]
 update_compile_order -fileset sources_1
+
+# Synthesise first and print the per-kernel resource breakdown before
+# implementation.  place_design refuses to run at all if the design is over
+# budget, and its DRC message only reports the total for the whole device -
+# which tells you that you are over but not by whose doing.  This table is the
+# thing you actually need, and it costs nothing to always emit it.
+launch_runs synth_1 -jobs $jobs
+wait_on_run synth_1
+if {[get_property PROGRESS [get_runs synth_1]] != "100%"} {
+    error "Synthesis failed; see $build_dir/$proj_name.runs/synth_1"
+}
+open_run synth_1 -name synth_1
+puts "INFO: post-synthesis utilisation by kernel"
+report_utilization -hierarchical -hierarchical_depth 2
 
 if {$run_bit} {
     launch_runs impl_1 -to_step write_bitstream -jobs $jobs
