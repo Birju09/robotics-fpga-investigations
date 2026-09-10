@@ -3,7 +3,31 @@
 
 #include "xil_io.h"
 #include "xparameters.h"
-#include "xtime_l.h"
+
+/*
+ * XTime_GetTime/COUNTS_PER_SECOND moved house.  They were in the standalone
+ * BSP's xtime_l.h; under the 2025.2 system-device-tree flow the BSP builds
+ * libxiltimer instead and the declarations come from xiltimer.h, with
+ * xtime_l.h absent entirely.  Both spellings are still in the field, so pick
+ * whichever the BSP actually shipped rather than hard-coding one and failing
+ * on the other.
+ */
+#if defined(__has_include)
+#  if __has_include("xtime_l.h")
+#    include "xtime_l.h"
+#    define IK_HAVE_XTIME 1
+#  elif __has_include("xiltimer.h")
+#    include "xiltimer.h"
+#    define IK_HAVE_XTIME 1
+#  endif
+#else
+#  include "xtime_l.h"
+#  define IK_HAVE_XTIME 1
+#endif
+
+#ifndef IK_HAVE_XTIME
+#error "Neither xtime_l.h nor xiltimer.h is in the BSP; no time base for the measurements."
+#endif
 
 /*
  * Kernel invocation is the same three steps everywhere: stage the arguments,

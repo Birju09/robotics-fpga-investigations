@@ -13,7 +13,7 @@
  * argument list - HLS assigns them by order and size, and adding one scalar
  * shifts everything after it.  The generated files are:
  *
- *   hls/build/<kernel>/**\/impl/ip/drivers/*\/src/x<kernel>_hw.h
+ *   find hls/build/<kernel> -path '*impl/ip/drivers*' -name 'x<kernel>_hw.h'
  *
  * verify_reg_map() in main.c does a runtime sanity check by writing a known
  * pattern and reading it back, which catches a stale map before it produces

@@ -46,6 +46,11 @@ static void init_platform_stub(void);
 /* xparameters.h names these from the block design instance names, but */
 /* the exact macro spelling varies with the Vivado/Vitis version, so   */
 /* resolve them with a small cascade rather than assuming one form.    */
+/*                                                                     */
+/* The 2025.2 system-device-tree flow dropped the _0 instance index    */
+/* that the older classic flow put in every name, so both forms are    */
+/* below.  scripts/build_vitis.py prints the macros the platform       */
+/* actually generated - read that first if this cascade misses.        */
 /* ------------------------------------------------------------------ */
 #if defined(XPAR_IK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR
@@ -53,8 +58,12 @@ static void init_platform_stub(void);
 #define ANALYTIC_BASE XPAR_XIK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR
 #elif defined(XPAR_IK_ANALYTIC_KERNEL_0_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_0_BASEADDR
+#elif defined(XPAR_IK_ANALYTIC_KERNEL_S_AXI_CTRL_BASEADDR)
+#define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_S_AXI_CTRL_BASEADDR
+#elif defined(XPAR_IK_ANALYTIC_KERNEL_BASEADDR)
+#define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_BASEADDR
 #else
-#error "Cannot find the analytic kernel base address. Check xparameters.h and update these guards."
+#error "Cannot find the analytic kernel base address. Run scripts/build_vitis.py and read the 'kernel base addresses in ...' listing it prints after the platform build, then add that spelling here."
 #endif
 
 /* ik_dls_kernel is not in the default bitstream (see the file header comment
@@ -64,6 +73,10 @@ static void init_platform_stub(void);
 #define MATMUL_BASE XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR
 #elif defined(XPAR_MAT_MUL_KERNEL_0_BASEADDR)
 #define MATMUL_BASE XPAR_MAT_MUL_KERNEL_0_BASEADDR
+#elif defined(XPAR_MAT_MUL_KERNEL_S_AXI_CTRL_BASEADDR)
+#define MATMUL_BASE XPAR_MAT_MUL_KERNEL_S_AXI_CTRL_BASEADDR
+#elif defined(XPAR_MAT_MUL_KERNEL_BASEADDR)
+#define MATMUL_BASE XPAR_MAT_MUL_KERNEL_BASEADDR
 #else
 #define MATMUL_BASE 0
 #endif
@@ -72,6 +85,10 @@ static void init_platform_stub(void);
 #define MATINV_BASE XPAR_MAT_INV_KERNEL_0_S_AXI_CTRL_BASEADDR
 #elif defined(XPAR_MAT_INV_KERNEL_0_BASEADDR)
 #define MATINV_BASE XPAR_MAT_INV_KERNEL_0_BASEADDR
+#elif defined(XPAR_MAT_INV_KERNEL_S_AXI_CTRL_BASEADDR)
+#define MATINV_BASE XPAR_MAT_INV_KERNEL_S_AXI_CTRL_BASEADDR
+#elif defined(XPAR_MAT_INV_KERNEL_BASEADDR)
+#define MATINV_BASE XPAR_MAT_INV_KERNEL_BASEADDR
 #else
 #define MATINV_BASE 0
 #endif

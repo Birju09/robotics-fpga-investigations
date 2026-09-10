@@ -83,6 +83,40 @@ def stage_sources(dest):
     print("  staged %d files into %s" % (n, dest))
 
 
+def report_kernel_xpar(workspace):
+    """Print the XPAR_* base-address macros the platform actually generated.
+
+    main.c resolves each kernel's base address through a #if cascade over the
+    spellings xparameters.h has used across releases, and stops with #error if
+    none match.  That error can only say what it did not find, so print what is
+    really there - it is the one piece of information needed to fix it, and it
+    costs a grep of a file the platform build just wrote.
+    """
+    hits = []
+    for dirpath, _dirs, files in os.walk(workspace):
+        if "xparameters.h" in files:
+            hits.append(os.path.join(dirpath, "xparameters.h"))
+    if not hits:
+        print("  note: no xparameters.h found under %s" % workspace)
+        return
+    names = ("KERNEL", "MAT_MUL", "MAT_INV", "IK_ANALYTIC", "IK_DLS")
+    for h in sorted(hits, key=len):
+        lines = []
+        with open(h, "r", errors="replace") as fh:
+            for line in fh:
+                if line.startswith("#define XPAR_") and any(n in line for n in names):
+                    lines.append(line.rstrip())
+        if lines:
+            print("  kernel base addresses in %s:" % h)
+            for line in lines:
+                print("      %s" % line)
+            return
+    print("  note: no kernel XPAR_* macros in any xparameters.h under %s"
+          % workspace)
+    print("        the bitstream may not contain the kernels you expect;")
+    print("        check 'INFO: building kernels' in the Vivado log.")
+
+
 def main():
     args = parse_args()
 
@@ -129,6 +163,7 @@ def main():
             sys.exit("platform built but no .xpfm found under %s" % args.workspace)
         xpfm = sorted(hits, key=len)[0]
     print("  platform: %s" % xpfm)
+    report_kernel_xpar(os.path.join(args.workspace, PLATFORM))
 
     # ---------------- application ----------------
     print("creating app component '%s'" % APP)
@@ -139,11 +174,18 @@ def main():
         template="empty_application",
     )
 
-    stage_sources(os.path.join(args.workspace, APP, "src"))
+    app_src = os.path.join(args.workspace, APP, "src")
+    stage_sources(app_src)
 
     # Include path for the shared kernel headers, and the float switch that
     # makes the PS build compile the same sources the PL kernels use.
-    flags = '-I${_ide_ws}/%s/src/include -DIK_USE_FLOAT -O2' % APP
+    #
+    # An absolute path, not '${_ide_ws}/...': that variable is substituted by
+    # the Vitis IDE, but the 2025.2 CMake build passes the flag string through
+    # verbatim, so it expanded to nothing and the compiler was handed
+    # '-I/ik_app/src/include'.  Every kernel .cpp then failed to find its own
+    # header while the error pointed at the source file rather than the flag.
+    flags = '-I%s -DIK_USE_FLOAT -O2' % os.path.join(app_src, "include")
     for key, val in (("USER_COMPILE_OTHER_FLAGS", flags),
                      ("USER_COMPILE_DEBUG_LEVEL", "-g")):
         try:

@@ -2,7 +2,7 @@
  * Software reference running on the Cortex-A9.
  *
  * This deliberately compiles the *same* translation units the PL kernels are
- * built from (hls/src/*.cpp) with -DIK_USE_FLOAT.  Reimplementing the solvers
+ * built from (the .cpp files under hls/src) with -DIK_USE_FLOAT.  Reimplementing
  * separately would make the PS-vs-PL comparison a comparison of two different
  * programs; sharing the source means any latency difference is attributable to
  * the target, not to the algorithm.
