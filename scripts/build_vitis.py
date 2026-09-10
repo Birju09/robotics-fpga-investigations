@@ -219,7 +219,15 @@ def main():
     # verbatim, so it expanded to nothing and the compiler was handed
     # '-I/ik_app/src/include'.  Every kernel .cpp then failed to find its own
     # header while the error pointed at the source file rather than the flag.
-    flags = '-I%s -DIK_USE_FLOAT -O2' % os.path.join(app_src, "include")
+    #
+    # The two -Wno- flags turn off warnings about the HLS loop labels and
+    # #pragma HLS directives that carry the whole design intent under
+    # synthesis and mean nothing to a host compiler.  There are enough of them
+    # to bury a real diagnostic: the run that first linked this application
+    # emitted over five hundred lines of them around a single undefined
+    # reference.  Nothing else is suppressed.
+    flags = ('-I%s -DIK_USE_FLOAT -O2 -Wno-unused-label -Wno-unknown-pragmas'
+             % os.path.join(app_src, "include"))
     for key, val in (("USER_COMPILE_OTHER_FLAGS", flags),
                      ("USER_COMPILE_DEBUG_LEVEL", "-g")):
         try:

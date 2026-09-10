@@ -4,6 +4,17 @@
 #include <stdint.h>
 
 /*
+ * Vitis compiles the whole application with g++, .c files included, so every
+ * declaration here is seen in a C++ translation unit and would be mangled.
+ * ik_sw_ref.cpp defines its half of this interface inside extern "C" - without
+ * a matching guard the two spellings do not meet and the reference goes
+ * undefined at link time, long after every file has compiled cleanly.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+/*
  * Bare-metal driver for the four HLS kernels.
  *
  * Register maps
@@ -104,5 +115,9 @@ int ik_dls_solve_sw(const float pose[6], const float q_seed[6],
 void     ik_timer_init(void);
 uint64_t ik_timer_read(void);       /* free-running, CPU_3x2x ticks */
 uint32_t ik_timer_hz(void);
+
+#ifdef __cplusplus
+}
+#endif
 
 #endif /* IK_DRIVER_H */
