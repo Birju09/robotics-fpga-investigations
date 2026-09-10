@@ -204,8 +204,22 @@ error, and comparing the two is part of the exercise. See
 Verified: the golden model, all four kernels' algorithms (host regression, all
 passing), and the numeric format choice.
 
-Not yet run — no Vivado/Vitis install was available on the development machine:
-C-synthesis, co-simulation, IP packaging, the block design, and the on-target
-measurements. The latency and utilisation numbers those steps produce are the
-actual output of this investigation; the code is staged so that
-`make -C hls syn && make -C hls reports` produces them in one step.
+A first full run of `make -C hls syn/ip` and `scripts/build_vivado.tcl` against
+2025.2 got through `opt_design` and failed `place_design` with the design
+requiring 2.4-3.2x the xc7z020's CARRY4/DSP48E1/LUT budget. Root cause: `ikm::sincos()`,
+`atan2_hypot()`, `sqrt()` and `sqrt_acc()` in `hls/include/ik_math.hpp` combined
+`#pragma HLS INLINE` with `#pragma HLS UNROLL` on their 24-32 iteration CORDIC
+and shift-subtract loops, so every call site got a fully spatial copy of the
+wide (40-64 bit) adder chain instead of one reused across iterations -
+`iks::analytic()` alone has roughly a dozen such call sites, multiplied again
+by `ik_dls`'s own copies and the standalone matrix IPs sharing the bitstream.
+Fixed by dropping `UNROLL` on those four loops; they stay fixed-trip-count
+(so latency is still constant), just rolled instead of spread across
+silicon. Re-running the synthesis/implementation flow to confirm is the next
+step.
+
+Not yet run to completion — C-synthesis, co-simulation, IP packaging, the
+block design, and the on-target measurements. The latency and utilisation
+numbers those steps produce are the actual output of this investigation; the
+code is staged so that `make -C hls syn && make -C hls reports` produces them
+in one step.

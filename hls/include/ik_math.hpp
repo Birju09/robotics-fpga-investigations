@@ -114,7 +114,9 @@ FOLD2PI:
 
 ROT:
     for (int i = 0; i < CORDIC_ITER; i++) {
-#pragma HLS UNROLL
+        /* Deliberately rolled - fixed trip count already gives constant
+         * latency; UNROLL would spatially replicate the 40-bit adder chain
+         * 24x per call site instead of reusing one. */
         cordic_t xs = cshift(x, i);
         cordic_t ys = cshift(y, i);
         if (z < 0) {            /* d = -1 */
@@ -154,8 +156,7 @@ inline void atan2_hypot(ik_real_t yi, ik_real_t xi,
     }
 
 VEC:
-    for (int i = 0; i < CORDIC_ITER; i++) {
-#pragma HLS UNROLL
+    for (int i = 0; i < CORDIC_ITER; i++) {   /* rolled - see sincos() above */
         cordic_t xs = cshift(x, i);
         cordic_t ys = cshift(y, i);
         if (y < 0) {            /* d = +1 */
@@ -210,8 +211,7 @@ inline ik_real_t sqrt(ik_real_t a)
     uint64_t bit = (uint64_t)1 << 46;      /* highest even power of 4 needed */
 
 SQRT:
-    for (int i = 0; i < 24; i++) {
-#pragma HLS UNROLL
+    for (int i = 0; i < 24; i++) {   /* rolled - see sincos() above */
         uint64_t t = res + bit;
         res >>= 1;
         if (v >= t) {
@@ -264,8 +264,7 @@ inline ik_real_t sqrt_acc(ik_acc_t a)
     uint64_t bit = (uint64_t)1 << 62;
 
 SQRTA:
-    for (int i = 0; i < 32; i++) {
-#pragma HLS UNROLL
+    for (int i = 0; i < 32; i++) {   /* rolled - see sincos() above */
         uint64_t t = res + bit;
         res >>= 1;
         if (v >= t) {
