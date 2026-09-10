@@ -1,11 +1,13 @@
 #-----------------------------------------------------------------------------
 # Vivado 2025.2 - build the IK investigation platform.
 #
-#   Zynq-7000 PS  ->  AXI interconnect  ->  four HLS kernels on AXI4-Lite
+#   Zynq-7000 PS  ->  AXI interconnect  ->  HLS kernels on AXI4-Lite
 #
 # Run:
 #   vivado -mode batch -source scripts/build_vivado.tcl
 #   vivado -mode batch -source scripts/build_vivado.tcl -tclargs --no-bit
+#   vivado -mode batch -source scripts/build_vivado.tcl -tclargs \
+#       --kernels mat_mul_kernel,mat_inv_kernel,ik_analytic_kernel,ik_dls_kernel
 #
 # Produces build/vivado/ik_platform.xsa for the Vitis application build.
 #
@@ -27,6 +29,13 @@ set hls_dir   $root_dir/hls/build
 set run_bit   1
 set jobs      8
 
+# ik_dls_kernel does not fit on the xc7z020 yet even after resource-sharing
+# work (still ~126% DSP utilisation standalone) - default to the three
+# kernels that do, so a bitstream and real on-target numbers are obtainable
+# now.  Pass --kernels to override, e.g. once ik_dls fits or to build it in
+# isolation: --kernels ik_dls_kernel
+set kernels {mat_mul_kernel mat_inv_kernel ik_analytic_kernel}
+
 # ---------------------------------------------------------------- args ----
 for {set i 0} {$i < $argc} {incr i} {
     switch -- [lindex $argv $i] {
@@ -34,6 +43,7 @@ for {set i 0} {$i < $argc} {incr i} {
         "--part"    { incr i; set part [lindex $argv $i] }
         "--hls-dir" { incr i; set hls_dir [file normalize [lindex $argv $i]] }
         "--jobs"    { incr i; set jobs [lindex $argv $i] }
+        "--kernels" { incr i; set kernels [split [lindex $argv $i] ","] }
         default     { puts "WARNING: ignoring unknown argument [lindex $argv $i]" }
     }
 }
@@ -109,7 +119,7 @@ set_property ip_repo_paths $repos [current_project]
 update_ip_catalog -rebuild
 
 # Resolve each kernel's VLNV from the catalog.
-set kernels {mat_mul_kernel mat_inv_kernel ik_analytic_kernel ik_dls_kernel}
+puts "INFO: building kernels: $kernels"
 set kernel_vlnv {}
 foreach k $kernels {
     set hits [get_ipdefs -all "xilinx.com:hls:${k}:*"]

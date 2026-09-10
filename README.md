@@ -120,7 +120,8 @@ make -C hls syn
 make -C hls reports        # latency + utilisation summary
 make -C hls ip
 
-# 3. hardware
+# 3. hardware — defaults to mat_mul_kernel + mat_inv_kernel + ik_analytic_kernel
+#    (ik_dls_kernel does not fit the xc7z020 standalone yet; see Status)
 vivado -mode batch -source scripts/build_vivado.tcl
 
 # 4. register map, then the application
@@ -191,6 +192,9 @@ separately. `model/ik_model.elbow_conditioning()` computes the number.
 argument writes, `ap_start`, the poll loop, result reads. That is what a control
 loop experiences.
 
+Scope is currently `ik_analytic` (plus the standalone `mat_mul`/`mat_inv` IPs)
+only — see Status below for why `ik_dls` is not in the harness yet.
+
 It is deliberately *not* the same number Vitis HLS reports. The HLS latency is
 PL cycles between `ap_start` and `ap_done`; it excludes roughly 20 single-beat
 AXI4-Lite accesses per solve. For kernels this small that gap is not a rounding
@@ -205,21 +209,51 @@ Verified: the golden model, all four kernels' algorithms (host regression, all
 passing), and the numeric format choice.
 
 A first full run of `make -C hls syn/ip` and `scripts/build_vivado.tcl` against
-2025.2 got through `opt_design` and failed `place_design` with the design
-requiring 2.4-3.2x the xc7z020's CARRY4/DSP48E1/LUT budget. Root cause: `ikm::sincos()`,
-`atan2_hypot()`, `sqrt()` and `sqrt_acc()` in `hls/include/ik_math.hpp` combined
-`#pragma HLS INLINE` with `#pragma HLS UNROLL` on their 24-32 iteration CORDIC
-and shift-subtract loops, so every call site got a fully spatial copy of the
-wide (40-64 bit) adder chain instead of one reused across iterations -
-`iks::analytic()` alone has roughly a dozen such call sites, multiplied again
-by `ik_dls`'s own copies and the standalone matrix IPs sharing the bitstream.
-Fixed by dropping `UNROLL` on those four loops; they stay fixed-trip-count
-(so latency is still constant), just rolled instead of spread across
-silicon. Re-running the synthesis/implementation flow to confirm is the next
-step.
+2025.2 got through `opt_design` and failed `place_design`, needing roughly 3x
+the xc7z020's CARRY4/DSP48E1/LUT budget with all four kernels in one bitstream.
+Several rounds of targeted fixes brought that down substantially:
 
-Not yet run to completion — C-synthesis, co-simulation, IP packaging, the
-block design, and the on-target measurements. The latency and utilisation
-numbers those steps produce are the actual output of this investigation; the
-code is staged so that `make -C hls syn && make -C hls reports` produces them
-in one step.
+- `ikm::sincos()`, `atan2_hypot()`, `sqrt()`, `sqrt_acc()` combined
+  `#pragma HLS INLINE` with `#pragma HLS UNROLL` on their 24-32 iteration
+  CORDIC/shift-subtract loops, so every call site got a fully spatial copy of
+  the wide adder chain. Rolled the loops (fixed trip count still gives
+  constant latency) and switched `INLINE` to `INLINE off` so call sites share
+  one synthesized engine instead of duplicating it.
+- The same over-unrolling pattern hit `dh_step()`'s 3x3 rotation-matrix
+  multiply and `ik_analytic.cpp`'s wrist-rotation computation.
+- `ik_acc_t` (the Q32.32 MAC accumulator) was declared `AP_RND, AP_SAT` even
+  though its own header comment says rounding only ever needs to happen once,
+  on the final narrowing cast to `ik_real_t` — every `acc += ...` step was
+  paying for round/saturate hardware that could never fire. Switched to
+  `AP_TRN, AP_WRAP`; `ik_real_t` itself is untouched, since its `AP_RND`/
+  `AP_SAT` are load-bearing (bit-exactness with the golden model, and
+  stopping a joint angle from wrapping sign on overflow).
+- Vitis HLS auto-pipelines small loops with no explicit directive; this
+  silently flattened (fully unrolled) `dh_step()`'s already-rolled matrix
+  multiply inside `fk()`/`rot03()`/`fk_jacobian()`'s chain loops. Added
+  explicit `#pragma HLS PIPELINE off` to keep them sequential.
+- `iks::dls()`'s three sequential calls to `mm::multiply()` synthesized as
+  three separate instances instead of sharing one (an `ALLOCATION` pragma
+  did not enforce this in this release); routed two of the three through a
+  shared loop with value-muxed operand staging (arrays of pointers are not
+  synthesizable in Vitis HLS).
+
+Net effect: `ik_analytic_kernel` now fits standalone (86% LUT, 75% DSP).
+`ik_dls_kernel` improved from ~3x over budget to ~126% DSP utilisation
+standalone but still does not fit — `mi::invert()`'s cost alone (96 DSP)
+matches the standalone `mat_inv_kernel`, and appears to be close to the
+practical floor without a larger architectural change.
+
+Given that, the default `scripts/build_vivado.tcl` build and the
+`sw/src/main.c` benchmarking harness are scoped to `mat_mul_kernel`,
+`mat_inv_kernel` and `ik_analytic_kernel` for now, so a real bitstream and
+on-target PS/PL numbers are obtainable. `ik_dls`'s HLS sources, driver code
+(`ik_driver.c`, `ik_sw_ref.cpp`) and register map are all still in place;
+`--kernels` on `build_vivado.tcl` can add `ik_dls_kernel` back in (alone or
+otherwise) once its resource fit is resolved or if you want to characterise
+it in isolation regardless of fit.
+
+Not yet run to completion on real hardware — co-simulation and the on-target
+measurements themselves. The code is staged so that
+`make -C hls syn && make -C hls reports` and
+`vivado -mode batch -source scripts/build_vivado.tcl` produce them.

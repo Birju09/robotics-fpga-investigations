@@ -16,10 +16,14 @@
  * is itself a finding: for a kernel this small, moving data can cost more than
  * computing.  Compare against `make -C hls reports`.
  *
- * The comparison that matters for the real-time question is not PS vs PL in
- * the mean, but the spread.  The analytic kernel should show a tight
- * distribution; the DLS kernel should show a long tail that tracks its
- * iteration count.
+ * Scope: ik_analytic only for now.  ik_dls_kernel still does not fit on the
+ * xc7z020 standalone (~126% DSP utilisation after the resource-sharing work
+ * in hls/src/ik_dls.cpp and hls/include/ik_math.hpp) - see the README
+ * Status section.  scripts/build_vivado.tcl defaults to a bitstream with
+ * mat_mul_kernel, mat_inv_kernel and ik_analytic_kernel only, so DLS's AXI
+ * base address does not exist in xparameters.h for this build; the DLS
+ * driver code (ik_driver.c, ik_sw_ref.cpp) is left in place for when it
+ * fits and this harness is extended back to cover it.
  */
 
 #include <stdio.h>
@@ -53,15 +57,8 @@ static void init_platform_stub(void);
 #error "Cannot find the analytic kernel base address. Check xparameters.h and update these guards."
 #endif
 
-#if defined(XPAR_IK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR)
-#define DLS_BASE XPAR_IK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR
-#elif defined(XPAR_XIK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR)
-#define DLS_BASE XPAR_XIK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR
-#elif defined(XPAR_IK_DLS_KERNEL_0_BASEADDR)
-#define DLS_BASE XPAR_IK_DLS_KERNEL_0_BASEADDR
-#else
-#error "Cannot find the DLS kernel base address. Check xparameters.h and update these guards."
-#endif
+/* ik_dls_kernel is not in the default bitstream (see the file header comment
+ * above) - no base address to resolve here until it is added back. */
 
 #if defined(XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define MATMUL_BASE XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR
@@ -78,10 +75,6 @@ static void init_platform_stub(void);
 #else
 #define MATINV_BASE 0
 #endif
-
-#define LAMBDA   0.02f
-#define TOL      0.001f
-#define MAX_ITER 64
 
 /* ------------------------------------------------------------------ */
 /* Statistics                                                          */
@@ -199,12 +192,10 @@ static void print_pose_result(int i, const char *tag, int st,
 int main(void)
 {
     ik_dev_t analytic = { ANALYTIC_BASE };
-    ik_dev_t dls      = { DLS_BASE };
     ik_dev_t matmul   = { MATMUL_BASE };
     ik_dev_t matinv   = { MATINV_BASE };
 
-    samples_t s_an_hw, s_dls_hw, s_an_sw, s_dls_sw, s_mm, s_mi;
-    samples_t s_dls_iters;
+    samples_t s_an_hw, s_an_sw, s_mm, s_mi;
 
     init_platform_stub();
 
@@ -214,7 +205,6 @@ int main(void)
     xil_printf("==================================================================\r\n");
     xil_printf(" global timer      : %u Hz\r\n", (unsigned)ik_timer_hz());
     xil_printf(" poses             : %d\r\n", IK_NVEC);
-    xil_printf(" DLS lambda/tol    : 0.02 / 0.001, cap %d iterations\r\n", MAX_ITER);
 #if IK_REGMAP_GENERATED
     xil_printf(" register map      : generated from this build\r\n");
 #else
@@ -230,9 +220,6 @@ int main(void)
     ok &= verify_regmap(&analytic,
                         XIK_ANALYTIC_KERNEL_CTRL_ADDR_POSE_BASE,
                         XIK_ANALYTIC_KERNEL_CTRL_ADDR_Q_BASE, "analytic");
-    ok &= verify_regmap(&dls,
-                        XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE,
-                        XIK_DLS_KERNEL_CTRL_ADDR_Q_BASE, "dls");
     if (!ok) {
         xil_printf("\r\n  REGISTER MAP IS WRONG - refusing to report timings.\r\n");
         xil_printf("  Run: make -C hls ip && python3 scripts/gen_regmap.py\r\n");
@@ -271,32 +258,6 @@ int main(void)
         samp_add(&s_an_sw, (uint32_t)(t1 - t0));
     }
 
-    /* ---- DLS: PL ---- */
-    samp_reset(&s_dls_hw);
-    samp_reset(&s_dls_sw);
-    samp_reset(&s_dls_iters);
-    int nconv = 0;
-    for (int i = 0; i < IK_NVEC; i++) {
-        float pose[6], seed[6], q[6], resid;
-        uint32_t c;
-        int iters, st;
-        for (int j = 0; j < 6; j++) {
-            pose[j] = ik_q2f(ik_pose_tbl[i][j]);
-            seed[j] = ik_q2f(ik_seed_tbl[i][j]);
-        }
-
-        st = ik_dls_solve(&dls, pose, seed, LAMBDA, TOL, MAX_ITER,
-                          q, &iters, &resid, &c);
-        samp_add(&s_dls_hw, c);
-        samp_add(&s_dls_iters, (uint32_t)iters);
-        if (st == IK_OK) nconv++;
-
-        uint64_t t0 = ik_timer_read();
-        ik_dls_solve_sw(pose, seed, LAMBDA, TOL, MAX_ITER, q, &iters, &resid);
-        uint64_t t1 = ik_timer_read();
-        samp_add(&s_dls_sw, (uint32_t)(t1 - t0));
-    }
-
     /* ---- standalone matrix IPs ---- */
     samp_reset(&s_mm);
     samp_reset(&s_mi);
@@ -321,21 +282,10 @@ int main(void)
     xil_printf("-- latency, PS wall clock around the whole transaction --\r\n");
     samp_report("analytic  (PL)", &s_an_hw);
     samp_report("analytic  (PS, double)", &s_an_sw);
-    samp_report("DLS       (PL)", &s_dls_hw);
-    samp_report("DLS       (PS, double)", &s_dls_sw);
     if (MATMUL_BASE && MATINV_BASE) {
         samp_report("mat_mul 6x6x6 (PL)", &s_mm);
         samp_report("mat_inv 6x6   (PL)", &s_mi);
     }
-
-    xil_printf("\r\n-- DLS iteration count --\r\n");
-    samp_sort(&s_dls_iters);
-    xil_printf("  converged %d/%d\r\n", nconv, IK_NVEC);
-    xil_printf("  min=%u  med=%u  p95=%u  max=%u\r\n",
-               (unsigned)s_dls_iters.v[0],
-               (unsigned)s_dls_iters.v[s_dls_iters.n / 2],
-               (unsigned)s_dls_iters.v[(s_dls_iters.n * 95) / 100],
-               (unsigned)s_dls_iters.v[s_dls_iters.n - 1]);
 
     xil_printf("\r\n");
     xil_printf("Read this against 'make -C hls reports': the HLS latency counts\r\n");
