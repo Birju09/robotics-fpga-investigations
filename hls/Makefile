@@ -90,7 +90,7 @@ reports:
 	  if [ -n "$$r" ]; then \
 	    echo ""; echo "--- $$k ($$r)"; \
 	    sed -n '/Latency/,/^$$/p' $$r | head -20; \
-	    sed -n '/Utilization Estimates/,/^====/p' $$r | head -18; \
+	    awk '/^== Utilization Estimates/{p=1} p && /^== / && !/Utilization Estimates/{exit} p{print}' $$r; \
 	  else \
 	    echo ""; echo "--- $$k: no top-level report yet (run 'make syn-$$k')"; \
 	  fi; \
