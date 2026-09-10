@@ -22,6 +22,13 @@ int iks::dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
              ik_real_t q[IK_DOF], int *iters, ik_real_t *resid)
 {
 #pragma HLS INLINE off
+    /* Three sequential, non-overlapping calls to mm::multiply() below
+     * (A=JJ^T, U, DQ) were each getting their own synthesized instance
+     * (multiply/multiply_1/multiply_2 in the HLS report) instead of sharing
+     * one - HLS does not automatically share hardware across straight-line
+     * call sites to a non-inlined function the way it does for calls inside
+     * a loop. Force it: these calls never need to run concurrently. */
+#pragma HLS ALLOCATION function instances=multiply limit=1
 
 DLS_SEED:
     for (int i = 0; i < IK_DOF; i++) {
