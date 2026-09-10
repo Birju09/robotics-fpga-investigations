@@ -1,0 +1,27 @@
+# Build outputs
+build/
+hls/build/
+hls/tb/build/
+
+# Vivado / Vitis debris
+*.jou
+*.log
+*.str
+.Xil/
+vivado*.backup.jou
+vivado*.backup.log
+NA/
+vitis-comp.json
+.analytics
+
+# Generated: reproduce with model/gen_vectors.py
+hls/tb/vectors/
+sw/src/ik_vectors.h
+
+# Python
+__pycache__/
+*.pyc
+
+# Note: sw/src/ik_regmap.h IS tracked.  A provisional version ships so the
+# tree builds; scripts/gen_regmap.py overwrites it with the real map from
+# your HLS build, and main.c refuses to report timings if it is wrong.
