@@ -63,18 +63,36 @@ ip:    $(addprefix ip-,$(KERNELS))
 
 # Pull the headline numbers out of the synthesis reports.  The analytic kernel
 # should show one latency; the DLS kernel should show a min/max spread.
+#
+# HLS emits one *_csynth.rpt per pipelined region in the hierarchy, not just
+# for the top function - e.g. mat_mul_kernel_Pipeline_MM_LOAD..._csynth.rpt
+# alongside mat_mul_kernel_csynth.rpt itself.  `find | head -1` used to grab
+# whichever one the filesystem listed first, which was almost always a
+# sub-region report with no top-level utilization table.  Match the actual
+# top function name instead.
+TOP-matmul      := mat_mul_kernel
+TOP-matinv      := mat_inv_kernel
+TOP-ik_analytic := ik_analytic_kernel
+TOP-ik_dls      := ik_dls_kernel
+
 reports:
 	@echo "=================================================================="
 	@echo " C-SYNTHESIS SUMMARY"
 	@echo "=================================================================="
 	@for k in $(KERNELS); do \
-	  r=$$(find $(BUILD)/$$k -name '*_csynth.rpt' 2>/dev/null | head -1); \
+	  case $$k in \
+	    matmul)      top=$(TOP-matmul) ;; \
+	    matinv)      top=$(TOP-matinv) ;; \
+	    ik_analytic) top=$(TOP-ik_analytic) ;; \
+	    ik_dls)      top=$(TOP-ik_dls) ;; \
+	  esac; \
+	  r=$$(find $(BUILD)/$$k -name "$${top}_csynth.rpt" 2>/dev/null | head -1); \
 	  if [ -n "$$r" ]; then \
 	    echo ""; echo "--- $$k ($$r)"; \
 	    sed -n '/Latency/,/^$$/p' $$r | head -20; \
 	    sed -n '/Utilization Estimates/,/^====/p' $$r | head -18; \
 	  else \
-	    echo ""; echo "--- $$k: no report yet (run 'make syn-$$k')"; \
+	    echo ""; echo "--- $$k: no top-level report yet (run 'make syn-$$k')"; \
 	  fi; \
 	done
 
