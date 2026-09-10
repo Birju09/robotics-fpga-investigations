@@ -13,6 +13,11 @@ Component creation and build go through the Vitis Python API.  Source files
 are copied in with shutil rather than through the API's import helper: the
 helper's name and signature have moved between releases, while a file copy into
 the component's src directory works the same way in all of them.
+
+Both components are deleted and recreated on every run.  The platform caches
+the hardware handoff from the XSA it was created against, so reusing one after
+a Vivado rebuild would silently compile the application against the previous
+bitstream's xparameters.h.
 """
 
 import argparse
@@ -52,7 +57,9 @@ def parse_args():
                                                  "ik_platform.xsa"))
     p.add_argument("--workspace", default=os.path.join(ROOT, "build", "vitis"))
     p.add_argument("--clean", action="store_true",
-                   help="delete the workspace before building")
+                   help="delete the whole workspace first, BSP included; the "
+                        "platform and app components are recreated on every "
+                        "run regardless")
     # `vitis -s` passes its own arguments through; ignore anything unknown.
     args, unknown = p.parse_known_args()
     if unknown:
@@ -117,6 +124,31 @@ def report_kernel_xpar(workspace):
     print("        check 'INFO: building kernels' in the Vivado log.")
 
 
+def drop_component(client, workspace, name):
+    """Remove a component left behind by an earlier run, if there is one.
+
+    Re-running the script otherwise dies with ALREADY_EXISTS on the first
+    create_*_component call.  Rebuilding rather than reusing is the deliberate
+    choice: a platform component caches the hardware handoff from the XSA it
+    was created against, so reusing one after a Vivado rebuild would compile
+    the application against the previous bitstream's xparameters.h.  That
+    failure is silent and produces AXI writes to addresses no kernel answers -
+    much worse than the seconds a rebuild costs.
+    """
+    path = os.path.join(workspace, name)
+    if not os.path.isdir(path):
+        return
+    print("  removing existing component '%s'" % name)
+    try:
+        client.delete_component(name=name)
+        return
+    except Exception as e:                             # noqa: BLE001
+        # The API name has moved between releases; the directory is the thing
+        # that actually holds the state, so fall back to removing it.
+        print("    (delete_component failed: %s - removing the directory)" % e)
+    shutil.rmtree(path, ignore_errors=True)
+
+
 def main():
     args = parse_args()
 
@@ -141,6 +173,7 @@ def main():
 
     # ---------------- platform ----------------
     print("creating platform component '%s' from %s" % (PLATFORM, args.xsa))
+    drop_component(client, args.workspace, PLATFORM)
     plat = client.create_platform_component(
         name=PLATFORM,
         hw_design=args.xsa,
@@ -167,6 +200,7 @@ def main():
 
     # ---------------- application ----------------
     print("creating app component '%s'" % APP)
+    drop_component(client, args.workspace, APP)
     app = client.create_app_component(
         name=APP,
         platform=xpfm,
