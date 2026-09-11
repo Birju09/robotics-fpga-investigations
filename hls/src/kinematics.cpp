@@ -1,55 +1,61 @@
 #include "kinematics.hpp"
+
 #include "ik_math.hpp"
 
-/* ------------------------------------------------------------------ */
-/* One standard-DH step:  [R|p] <- [R|p] * A_i(theta)                  */
-/*                                                                     */
-/*        [ ct  -st*ca   st*sa   a*ct ]                                */
-/* A_i =  [ st   ct*ca  -ct*sa   a*st ]                                */
-/*        [ 0    sa      ca      d    ]                                */
-/*                                                                     */
-/* cos/sin of alpha_i are tabulated (they are exactly 0 or +-1), so    */
-/* only one CORDIC call is needed per joint rather than two.           */
-/* ------------------------------------------------------------------ */
-/*
- * Split in two: the frame update proper, which takes sin/cos already
- * computed, and a convenience wrapper that computes them first.
- *
- * fk_jacobian() uses the former with ikm::sincos_batch(), because the six
- * CORDIC evaluations are independent of the chain and do not belong on its
- * critical path.  fk() and rot03() keep the wrapper - they are on
- * ik_analytic's path, which has no LUT budget for a second CORDIC instance.
- */
-static void dh_step_sc(int i, ik_real_t st, ik_real_t ct,
-                       ik_real_t R[3][3], ik_real_t p[3])
-{
+//! ------------------------------------------------------------------
+//! One standard-DH step:  [R|p] <- [R|p] * A_i(theta)
+//!
+//! [ ct  -st*ca   st*sa   a*ct ]
+//! A_i =  [ st   ct*ca  -ct*sa   a*st ]
+//! [ 0    sa      ca      d    ]
+//!
+//! cos/sin of alpha_i are tabulated (they are exactly 0 or +-1), so
+//! only one CORDIC call is needed per joint rather than two.
+//! ------------------------------------------------------------------
+//
+//! Split in two: the frame update proper, which takes sin/cos already
+//! computed, and a convenience wrapper that computes them first.
+//
+//! fk_jacobian() uses the former with ikm::sincos_batch(), because the six
+//! CORDIC evaluations are independent of the chain and do not belong on its
+//! critical path.  fk() and rot03() keep the wrapper - they are on
+//! ik_analytic's path, which has no LUT budget for a second CORDIC instance.
+//
+static void dh_step_sc(int i, ik_real_t st, ik_real_t ct, ik_real_t R[3][3],
+                       ik_real_t p[3]) {
 #pragma HLS INLINE
     const ik_real_t ca = (ik_real_t)IK_DH_CA[i];
     const ik_real_t sa = (ik_real_t)IK_DH_SA[i];
-    const ik_real_t a  = (ik_real_t)IK_DH_A[i];
-    const ik_real_t d  = (ik_real_t)IK_DH_D[i];
+    const ik_real_t a = (ik_real_t)IK_DH_A[i];
+    const ik_real_t d = (ik_real_t)IK_DH_D[i];
 
     ik_real_t AR[3][3];
-    AR[0][0] = ct;  AR[0][1] = (ik_real_t)(-st * ca); AR[0][2] = (ik_real_t)(st * sa);
-    AR[1][0] = st;  AR[1][1] = (ik_real_t)(ct * ca);  AR[1][2] = (ik_real_t)(-ct * sa);
-    AR[2][0] = (ik_real_t)0; AR[2][1] = sa;           AR[2][2] = ca;
+    AR[0][0] = ct;
+    AR[0][1] = (ik_real_t)(-st * ca);
+    AR[0][2] = (ik_real_t)(st * sa);
+    AR[1][0] = st;
+    AR[1][1] = (ik_real_t)(ct * ca);
+    AR[1][2] = (ik_real_t)(-ct * sa);
+    AR[2][0] = (ik_real_t)0;
+    AR[2][1] = sa;
+    AR[2][2] = ca;
 
     ik_real_t ap[3];
     ap[0] = (ik_real_t)(a * ct);
     ap[1] = (ik_real_t)(a * st);
     ap[2] = d;
 
-    /* p <- p + R * ap   (must use the pre-update R)
-     *
-     * II=1 with the inner reduction unrolled: three multipliers, three
-     * cycles.  This was fully rolled back when the budget was 126% of the
-     * DSPs and every multiplier had to be justified; with the chain's CORDIC
-     * latency now hoisted out by sincos_batch(), these two products became
-     * the largest remaining term in a DH step.  See ik_config.hpp. */
+    //! p <- p + R * ap   (must use the pre-update R)
+    //
+    //! II=1 with the inner reduction unrolled: three multipliers, three
+    //! cycles.  This was fully rolled back when the budget was 126% of the
+    //! DSPs and every multiplier had to be justified; with the chain's CORDIC
+    //! latency now hoisted out by sincos_batch(), these two products became
+    //! the largest remaining term in a DH step.  See ik_config.hpp.
     ik_real_t np[3];
 DH_P:
     for (int r = 0; r < 3; r++) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE II = 1
         ik_acc_t acc = (ik_acc_t)p[r];
         for (int c = 0; c < 3; c++) {
 #pragma HLS UNROLL
@@ -58,14 +64,14 @@ DH_P:
         np[r] = (ik_real_t)acc;
     }
 
-    /* R <- R * AR.  Nine dot products of three terms; at II=1 with k
-     * unrolled that is nine cycles against twenty-seven rolled, sharing the
-     * same three multipliers as DH_P above since the two never overlap. */
+    //! R <- R * AR.  Nine dot products of three terms; at II=1 with k
+    //! unrolled that is nine cycles against twenty-seven rolled, sharing the
+    //! same three multipliers as DH_P above since the two never overlap.
     ik_real_t nR[3][3];
 DH_R:
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE II = 1
             ik_acc_t acc = (ik_acc_t)0;
             for (int k = 0; k < 3; k++) {
 #pragma HLS UNROLL
@@ -86,47 +92,47 @@ DH_WB:
     }
 }
 
-static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3])
-{
+static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3]) {
 #pragma HLS INLINE
     ik_real_t ct, st;
     ikm::sincos(th, st, ct);
     dh_step_sc(i, st, ct, R, p);
 }
 
-/* ------------------------------------------------------------------ */
+//! ------------------------------------------------------------------
 void ikk::rpy_to_rot(ik_real_t roll, ik_real_t pitch, ik_real_t yaw,
-                     ik_real_t R[3][3])
-{
+                     ik_real_t R[3][3]) {
 #pragma HLS INLINE off
     ik_real_t sr, cr, sp, cp, sy, cy;
-    ikm::sincos(roll,  sr, cr);
+    ikm::sincos(roll, sr, cr);
     ikm::sincos(pitch, sp, cp);
-    ikm::sincos(yaw,   sy, cy);
+    ikm::sincos(yaw, sy, cy);
 
     R[0][0] = (ik_real_t)(cy * cp);
-    R[0][1] = (ik_real_t)((ik_acc_t)(cy * (ik_real_t)(sp * sr)) - (ik_acc_t)(sy * cr));
-    R[0][2] = (ik_real_t)((ik_acc_t)(cy * (ik_real_t)(sp * cr)) + (ik_acc_t)(sy * sr));
+    R[0][1] = (ik_real_t)((ik_acc_t)(cy * (ik_real_t)(sp * sr)) -
+                          (ik_acc_t)(sy * cr));
+    R[0][2] = (ik_real_t)((ik_acc_t)(cy * (ik_real_t)(sp * cr)) +
+                          (ik_acc_t)(sy * sr));
     R[1][0] = (ik_real_t)(sy * cp);
-    R[1][1] = (ik_real_t)((ik_acc_t)(sy * (ik_real_t)(sp * sr)) + (ik_acc_t)(cy * cr));
-    R[1][2] = (ik_real_t)((ik_acc_t)(sy * (ik_real_t)(sp * cr)) - (ik_acc_t)(cy * sr));
+    R[1][1] = (ik_real_t)((ik_acc_t)(sy * (ik_real_t)(sp * sr)) +
+                          (ik_acc_t)(cy * cr));
+    R[1][2] = (ik_real_t)((ik_acc_t)(sy * (ik_real_t)(sp * cr)) -
+                          (ik_acc_t)(cy * sr));
     R[2][0] = (ik_real_t)(-sp);
     R[2][1] = (ik_real_t)(cp * sr);
     R[2][2] = (ik_real_t)(cp * cr);
 }
 
-void ikk::rot_to_rpy(const ik_real_t R[3][3], ik_real_t rpy[3])
-{
+void ikk::rot_to_rpy(const ik_real_t R[3][3], ik_real_t rpy[3]) {
 #pragma HLS INLINE off
     ik_real_t cyp = ikm::hypot(R[0][0], R[1][0]);
-    rpy[0] = ikm::atan2(R[2][1], R[2][2]);          /* roll  */
-    rpy[1] = ikm::atan2((ik_real_t)(-R[2][0]), cyp); /* pitch */
-    rpy[2] = ikm::atan2(R[1][0], R[0][0]);          /* yaw   */
+    rpy[0] = ikm::atan2(R[2][1], R[2][2]);            //! roll
+    rpy[1] = ikm::atan2((ik_real_t)(-R[2][0]), cyp);  //! pitch
+    rpy[2] = ikm::atan2(R[1][0], R[0][0]);            //! yaw
 }
 
-/* ------------------------------------------------------------------ */
-void ikk::fk(const ik_real_t q[IK_DOF], ik_real_t R[3][3], ik_real_t p[3])
-{
+//! ------------------------------------------------------------------
+void ikk::fk(const ik_real_t q[IK_DOF], ik_real_t R[3][3], ik_real_t p[3]) {
 #pragma HLS INLINE off
 FK_I:
     for (int r = 0; r < 3; r++) {
@@ -138,23 +144,24 @@ FK_I:
         }
     }
 FK_CHAIN:
-    /* Vitis HLS auto-pipelines small loops with no explicit directive, and
-     * pipelining this one would force dh_step()'s already-rolled internal
-     * matrix multiply to flatten (fully unroll) to fit the schedule -
-     * exactly the resource explosion the rolling fix was for. Keep it
-     * sequential explicitly rather than relying on the tool's default. */
+    //! Vitis HLS auto-pipelines small loops with no explicit directive, and
+    //! pipelining this one would force dh_step()'s already-rolled internal
+    //! matrix multiply to flatten (fully unroll) to fit the schedule -
+    //! exactly the resource explosion the rolling fix was for. Keep it
+    //! sequential explicitly rather than relying on the tool's default.
     for (int i = 0; i < IK_DOF; i++) {
 #pragma HLS PIPELINE off
         dh_step(i, q[i], R, p);
     }
 }
 
-void ikk::rot03(ik_real_t t1, ik_real_t t2, ik_real_t t3, ik_real_t R[3][3])
-{
+void ikk::rot03(ik_real_t t1, ik_real_t t2, ik_real_t t3, ik_real_t R[3][3]) {
 #pragma HLS INLINE off
     ik_real_t p[3];
     ik_real_t th[3];
-    th[0] = t1; th[1] = t2; th[2] = t3;
+    th[0] = t1;
+    th[1] = t2;
+    th[2] = t3;
 
 R3_I:
     for (int r = 0; r < 3; r++) {
@@ -166,21 +173,20 @@ R3_I:
         }
     }
 R3_CHAIN:
-    for (int i = 0; i < 3; i++) {   /* PIPELINE off - see fk()'s FK_CHAIN */
+    for (int i = 0; i < 3; i++) {  //! PIPELINE off - see fk()'s FK_CHAIN
 #pragma HLS PIPELINE off
         dh_step(i, th[i], R, p);
     }
 }
 
-/* ------------------------------------------------------------------ */
+//! ------------------------------------------------------------------
 void ikk::fk_jacobian(const ik_real_t q[IK_DOF], ik_real_t R[3][3],
-                      ik_real_t p[3], ik_real_t J[IK_MAT_MAX][IK_MAT_MAX])
-{
+                      ik_real_t p[3], ik_real_t J[IK_MAT_MAX][IK_MAT_MAX]) {
 #pragma HLS INLINE off
     ik_real_t Rc[3][3], pc[3];
     ik_real_t zax[IK_DOF][3], org[IK_DOF][3];
-#pragma HLS ARRAY_PARTITION variable=zax complete dim=0
-#pragma HLS ARRAY_PARTITION variable=org complete dim=0
+#pragma HLS ARRAY_PARTITION variable = zax complete dim = 0
+#pragma HLS ARRAY_PARTITION variable = org complete dim = 0
 
 JC_I:
     for (int r = 0; r < 3; r++) {
@@ -192,22 +198,22 @@ JC_I:
         }
     }
 
-    /* Joint i rotates about z_{i-1}, anchored at o_{i-1}: capture the frame
-     * BEFORE applying step i. */
+//! Joint i rotates about z_{i-1}, anchored at o_{i-1}: capture the frame
+//! BEFORE applying step i.
 #if IK_BATCH_CORDIC
-    /* All six CORDIC evaluations up front, pipelined.  They depend only on
-     * q, not on the chain, so leaving them inside JC_CHAIN put six serial
-     * CORDIC latencies on a critical path that had no need of them.
-     *
-     * Off by default: it is the most expensive of the recent optimisations
-     * in LUTs and the cheapest in cycles, and this kernel overflowed the
-     * part by 293 LUTs with it on.  See ik_config.hpp. */
+    //! All six CORDIC evaluations up front, pipelined.  They depend only on
+    //! q, not on the chain, so leaving them inside JC_CHAIN put six serial
+    //! CORDIC latencies on a critical path that had no need of them.
+    //
+    //! Off by default: it is the most expensive of the recent optimisations
+    //! in LUTs and the cheapest in cycles, and this kernel overflowed the
+    //! part by 293 LUTs with it on.  See ik_config.hpp.
     ik_real_t sq[IK_DOF], cq[IK_DOF];
     ikm::sincos_batch(q, sq, cq);
 #endif
 
 JC_CHAIN:
-    for (int i = 0; i < IK_DOF; i++) {   /* PIPELINE off - see fk()'s FK_CHAIN */
+    for (int i = 0; i < IK_DOF; i++) {  //! PIPELINE off - see fk()'s FK_CHAIN
 #pragma HLS PIPELINE off
         zax[i][0] = Rc[0][2];
         zax[i][1] = Rc[1][2];
@@ -232,32 +238,34 @@ JC_COPY:
         }
     }
 
-    /* Jv_i = z_i x (p_e - o_i),  Jw_i = z_i */
+    //! Jv_i = z_i x (p_e - o_i),  Jw_i = z_i
 JC_COLS:
-    /* II=3, not 1.  Six cross-product multiplies per column at II=1 are six
-     * multipliers; at II=3 they are two, shared.  fk_jacobian() is called
-     * only from ik_dls, so this does not affect ik_analytic_kernel.  See the
-     * resource/latency note in ik_config.hpp. */
+    //! II=3, not 1.  Six cross-product multiplies per column at II=1 are six
+    //! multipliers; at II=3 they are two, shared.  fk_jacobian() is called
+    //! only from ik_dls, so this does not affect ik_analytic_kernel.  See the
+    //! resource/latency note in ik_config.hpp.
     for (int i = 0; i < IK_DOF; i++) {
-#pragma HLS PIPELINE II=3
+#pragma HLS PIPELINE II = 3
         ik_real_t dx = (ik_real_t)((ik_acc_t)p[0] - (ik_acc_t)org[i][0]);
         ik_real_t dy = (ik_real_t)((ik_acc_t)p[1] - (ik_acc_t)org[i][1]);
         ik_real_t dz = (ik_real_t)((ik_acc_t)p[2] - (ik_acc_t)org[i][2]);
 
-        J[0][i] = (ik_real_t)((ik_acc_t)(zax[i][1] * dz) - (ik_acc_t)(zax[i][2] * dy));
-        J[1][i] = (ik_real_t)((ik_acc_t)(zax[i][2] * dx) - (ik_acc_t)(zax[i][0] * dz));
-        J[2][i] = (ik_real_t)((ik_acc_t)(zax[i][0] * dy) - (ik_acc_t)(zax[i][1] * dx));
+        J[0][i] = (ik_real_t)((ik_acc_t)(zax[i][1] * dz) -
+                              (ik_acc_t)(zax[i][2] * dy));
+        J[1][i] = (ik_real_t)((ik_acc_t)(zax[i][2] * dx) -
+                              (ik_acc_t)(zax[i][0] * dz));
+        J[2][i] = (ik_real_t)((ik_acc_t)(zax[i][0] * dy) -
+                              (ik_acc_t)(zax[i][1] * dx));
         J[3][i] = zax[i][0];
         J[4][i] = zax[i][1];
         J[5][i] = zax[i][2];
     }
 }
 
-/* ------------------------------------------------------------------ */
+//! ------------------------------------------------------------------
 void ikk::pose_error(const ik_real_t Rd[3][3], const ik_real_t pd[3],
                      const ik_real_t Rc[3][3], const ik_real_t pc[3],
-                     ik_real_t e[IK_MAT_MAX])
-{
+                     ik_real_t e[IK_MAT_MAX]) {
 #pragma HLS INLINE off
 PE_POS:
     for (int r = 0; r < 3; r++) {
@@ -265,8 +273,8 @@ PE_POS:
         e[r] = (ik_real_t)((ik_acc_t)pd[r] - (ik_acc_t)pc[r]);
     }
 
-    /* eo = 0.5 * sum over the three column pairs of (current x desired),
-     * rolled - see dh_step()'s DH_P/DH_R in this file. */
+//! eo = 0.5 * sum over the three column pairs of (current x desired),
+//! rolled - see dh_step()'s DH_P/DH_R in this file.
 PE_ROT:
     for (int r = 0; r < 3; r++) {
         int a = (r + 1) % 3;

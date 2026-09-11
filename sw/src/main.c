@@ -1,67 +1,66 @@
-/*
- * Bare-metal timing harness for the IK kernels.
- *
- * What this measures, and what it does not
- * ---------------------------------------
- * The number reported per solve is wall-clock time from the PS, measured with
- * the Cortex-A9 global timer around the whole transaction: argument writes,
- * ap_start, the poll loop, and the result reads.  That is the latency a
- * control loop actually experiences, and for these kernels the AXI4-Lite
- * register traffic is a substantial part of it - roughly 20 single-beat
- * transactions per solve, each costing tens of PS cycles.
- *
- * It is therefore NOT the same as the kernel latency Vitis HLS reports.  The
- * HLS figure is PL cycles between ap_start and ap_done; this one includes the
- * bus overhead the HLS figure excludes.  Both matter, and the gap between them
- * is itself a finding: for a kernel this small, moving data can cost more than
- * computing.  Compare against `make -C hls reports`.
- *
- * Scope
- * -----
- * This harness tests whichever kernels the bitstream actually contains.  Each
- * base address is resolved from xparameters.h and falls back to 0 when the IP
- * is absent, and every section is guarded on its own HAVE_* flag, so the same
- * source covers an analytic-only build, a DLS-only build, or both.
- *
- * That matters because they do not fit together.  ik_dls_kernel measured 180
- * DSP / 41k LUT closing at 80 MHz, and ik_analytic_kernel is another 165 DSP
- * / 46k LUT - either one alone leaves the xc7z020 nearly full.
- * scripts/build_vivado.tcl therefore builds one at a time; run it twice and
- * compare at the same clock, rather than reading across two bitstreams built
- * at different ones.  That is not a formality: an earlier round compared
- * analytic at 80 MHz against DLS at 40 and half the apparent gap was the
- * clock.
- */
+//
+//! Bare-metal timing harness for the IK kernels.
+//
+//! What this measures, and what it does not
+//! ---------------------------------------
+//! The number reported per solve is wall-clock time from the PS, measured with
+//! the Cortex-A9 global timer around the whole transaction: argument writes,
+//! ap_start, the poll loop, and the result reads.  That is the latency a
+//! control loop actually experiences, and for these kernels the AXI4-Lite
+//! register traffic is a substantial part of it - roughly 20 single-beat
+//! transactions per solve, each costing tens of PS cycles.
+//
+//! It is therefore NOT the same as the kernel latency Vitis HLS reports.  The
+//! HLS figure is PL cycles between ap_start and ap_done; this one includes the
+//! bus overhead the HLS figure excludes.  Both matter, and the gap between them
+//! is itself a finding: for a kernel this small, moving data can cost more than
+//! computing.  Compare against `make -C hls reports`.
+//
+//! Scope
+//! -----
+//! This harness tests whichever kernels the bitstream actually contains.  Each
+//! base address is resolved from xparameters.h and falls back to 0 when the IP
+//! is absent, and every section is guarded on its own HAVE_* flag, so the same
+//! source covers an analytic-only build, a DLS-only build, or both.
+//
+//! That matters because they do not fit together.  ik_dls_kernel measured 180
+//! DSP / 41k LUT closing at 80 MHz, and ik_analytic_kernel is another 165 DSP
+//! / 46k LUT - either one alone leaves the xc7z020 nearly full.
+//! scripts/build_vivado.tcl therefore builds one at a time; run it twice and
+//! compare at the same clock, rather than reading across two bitstreams built
+//! at different ones.  That is not a formality: an earlier round compared
+//! analytic at 80 MHz against DLS at 40 and half the apparent gap was the
+//! clock.
+//
 
 #include <stdio.h>
 #include <string.h>
 
-#include "xparameters.h"
-#include "xil_printf.h"
-#include "xil_cache.h"
-#include "xil_io.h"
-
 #include "ik_driver.h"
 #include "ik_regmap.h"
 #include "ik_vectors.h"
+#include "xil_cache.h"
+#include "xil_io.h"
+#include "xil_printf.h"
+#include "xparameters.h"
 
 static void init_platform_stub(void);
 
-/* ------------------------------------------------------------------ */
-/* Base addresses.                                                     */
-/*                                                                     */
-/* xparameters.h names these from the block design instance names, but */
-/* the exact macro spelling varies with the Vivado/Vitis version, so   */
-/* resolve them with a small cascade rather than assuming one form.    */
-/*                                                                     */
-/* The 2025.2 system-device-tree flow dropped the _0 instance index    */
-/* that the older classic flow put in every name, so both forms are    */
-/* below.  scripts/build_vitis.py prints the macros the platform       */
-/* actually generated - read that first if this cascade misses.        */
-/* ------------------------------------------------------------------ */
-/* HAVE_* rather than testing the address itself: XPAR_* values are often
- * written with a cast or a U suffix, neither of which is safe in #if
- * arithmetic.  A separate 0/1 flag is. */
+//! ------------------------------------------------------------------
+//! Base addresses.
+//!
+//! xparameters.h names these from the block design instance names, but
+//! the exact macro spelling varies with the Vivado/Vitis version, so
+//! resolve them with a small cascade rather than assuming one form.
+//!
+//! The 2025.2 system-device-tree flow dropped the _0 instance index
+//! that the older classic flow put in every name, so both forms are
+//! below.  scripts/build_vitis.py prints the macros the platform
+//! actually generated - read that first if this cascade misses.
+//! ------------------------------------------------------------------
+//! HAVE_* rather than testing the address itself: XPAR_* values are often
+//! written with a cast or a U suffix, neither of which is safe in #if
+//! arithmetic.  A separate 0/1 flag is.
 #if defined(XPAR_IK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR
 #define HAVE_ANALYTIC 1
@@ -103,32 +102,34 @@ static void init_platform_stub(void);
 #endif
 
 #if !HAVE_ANALYTIC && !HAVE_DLS
-#error "Neither ik_analytic_kernel nor ik_dls_kernel is in this bitstream, so there is nothing to measure. Check the --kernels list in scripts/build_vivado.tcl; if a kernel IS in the block design, run scripts/build_vitis.py and read the 'kernel base addresses in ...' listing it prints after the platform build, then add that spelling to the cascade above."
+#error \
+    "Neither ik_analytic_kernel nor ik_dls_kernel is in this bitstream, so there is nothing to measure. Check the --kernels list in scripts/build_vivado.tcl; if a kernel IS in the block design, run scripts/build_vitis.py and read the 'kernel base addresses in ...' listing it prints after the platform build, then add that spelling to the cascade above."
 #endif
 
-/*
- * ik_vectors.h is generated by model/gen_vectors.py and gitignored, so a
- * checkout or a pull updates this file but leaves that one at whatever was
- * last generated locally.  Catch the mismatch here rather than letting it
- * surface as an undeclared ik_model_iters_tbl twenty lines further down.
- *
- * Regenerating is not optional housekeeping: a stale header also means a
- * stale POSE SET.  The tail poses that make the DLS jitter measurable were
- * added at the same time as this table, so building against an old
- * ik_vectors.h would produce a clean-looking run whose max/med is wrong by
- * about 4x.
- */
+//
+//! ik_vectors.h is generated by model/gen_vectors.py and gitignored, so a
+//! checkout or a pull updates this file but leaves that one at whatever was
+//! last generated locally.  Catch the mismatch here rather than letting it
+//! surface as an undeclared ik_model_iters_tbl twenty lines further down.
+//
+//! Regenerating is not optional housekeeping: a stale header also means a
+//! stale POSE SET.  The tail poses that make the DLS jitter measurable were
+//! added at the same time as this table, so building against an old
+//! ik_vectors.h would produce a clean-looking run whose max/med is wrong by
+//! about 4x.
+//
 #if !defined(IK_VECTORS_VERSION) || IK_VECTORS_VERSION < 2
-#error "sw/src/ik_vectors.h is out of date - this harness needs version 2 (ik_qdls_tbl, ik_model_iters_tbl, DLS tail poses). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
+#error \
+    "sw/src/ik_vectors.h is out of date - this harness needs version 2 (ik_qdls_tbl, ik_model_iters_tbl, DLS tail poses). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
 #endif
 
-/* DLS solver arguments.  These mirror IK_DLS_*_DEFAULT in
- * hls/include/ik_config.hpp and must stay in step with them: lambda = 0.02
- * and tol = 1e-3 are what model/validate.py's sweep converged on, and the
- * iteration distribution below is only comparable to that sweep at the same
- * settings. */
-#define DLS_LAMBDA   0.02f
-#define DLS_TOL      0.001f
+//! DLS solver arguments.  These mirror IK_DLS_*_DEFAULT in
+//! hls/include/ik_config.hpp and must stay in step with them: lambda = 0.02
+//! and tol = 1e-3 are what model/validate.py's sweep converged on, and the
+//! iteration distribution below is only comparable to that sweep at the same
+//! settings.
+#define DLS_LAMBDA 0.02f
+#define DLS_TOL 0.001f
 #define DLS_MAX_ITER 64
 
 #if defined(XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR)
@@ -155,98 +156,106 @@ static void init_platform_stub(void);
 #define MATINV_BASE 0
 #endif
 
-/* ------------------------------------------------------------------ */
-/* Statistics                                                          */
-/* ------------------------------------------------------------------ */
+//! ------------------------------------------------------------------
+//! Statistics
+//! ------------------------------------------------------------------
 typedef struct {
     uint32_t v[IK_NVEC];
-    int      n;
+    int n;
 } samples_t;
 
-static void samp_reset(samples_t *s) { s->n = 0; }
-
-static void samp_add(samples_t *s, uint32_t x)
-{
-    if (s->n < IK_NVEC) s->v[s->n++] = x;
+static void samp_reset(samples_t* s) {
+    s->n = 0;
 }
 
-static void samp_sort(samples_t *s)
-{
+static void samp_add(samples_t* s, uint32_t x) {
+    if (s->n < IK_NVEC)
+        s->v[s->n++] = x;
+}
+
+static void samp_sort(samples_t* s) {
     for (int i = 1; i < s->n; i++) {
         uint32_t k = s->v[i];
         int j = i - 1;
-        while (j >= 0 && s->v[j] > k) { s->v[j + 1] = s->v[j]; j--; }
+        while (j >= 0 && s->v[j] > k) {
+            s->v[j + 1] = s->v[j];
+            j--;
+        }
         s->v[j + 1] = k;
     }
 }
 
-/* Ticks -> nanoseconds.  The global timer runs at COUNTS_PER_SECOND. */
-static uint32_t ticks_to_ns(uint32_t ticks)
-{
+//! Ticks -> nanoseconds.  The global timer runs at COUNTS_PER_SECOND.
+static uint32_t ticks_to_ns(uint32_t ticks) {
     return (uint32_t)(((uint64_t)ticks * 1000000000ULL) / ik_timer_hz());
 }
 
-static void samp_report(const char *label, samples_t *s)
-{
-    if (s->n == 0) { xil_printf("  %s: no samples\r\n", label); return; }
+static void samp_report(const char* label, samples_t* s) {
+    if (s->n == 0) {
+        xil_printf("  %s: no samples\r\n", label);
+        return;
+    }
     samp_sort(s);
 
     uint64_t sum = 0;
-    for (int i = 0; i < s->n; i++) sum += s->v[i];
+    for (int i = 0; i < s->n; i++)
+        sum += s->v[i];
 
-    uint32_t mn  = s->v[0];
-    uint32_t md  = s->v[s->n / 2];
+    uint32_t mn = s->v[0];
+    uint32_t md = s->v[s->n / 2];
     uint32_t p95 = s->v[(s->n * 95) / 100];
-    uint32_t mx  = s->v[s->n - 1];
-    uint32_t av  = (uint32_t)(sum / s->n);
+    uint32_t mx = s->v[s->n - 1];
+    uint32_t av = (uint32_t)(sum / s->n);
 
-    xil_printf("  %-26s n=%3d  min=%6u  med=%6u  p95=%6u  max=%6u  mean=%6u  (ns)\r\n",
-               label, s->n,
-               ticks_to_ns(mn), ticks_to_ns(md), ticks_to_ns(p95),
-               ticks_to_ns(mx), ticks_to_ns(av));
-    /* Jitter ratio is the real-time figure of merit: how much worse the worst
-     * case is than the typical one. */
+    xil_printf(
+        "  %-26s n=%3d  min=%6u  med=%6u  p95=%6u  max=%6u  mean=%6u  (ns)\r\n",
+        label, s->n, ticks_to_ns(mn), ticks_to_ns(md), ticks_to_ns(p95),
+        ticks_to_ns(mx), ticks_to_ns(av));
+    //! Jitter ratio is the real-time figure of merit: how much worse the worst
+    //! case is than the typical one.
     if (md)
-        xil_printf("  %-26s max/med = %u.%02u\r\n", "",
-                   mx / md, ((mx * 100) / md) % 100);
+        xil_printf("  %-26s max/med = %u.%02u\r\n", "", mx / md,
+                   ((mx * 100) / md) % 100);
 }
 
-/*
- * Same five-number summary, but for counts rather than times - used for DLS's
- * iteration distribution.  Printing it directly under the DLS latency rows is
- * the point of the whole comparison: the analytic kernel's latency spread is
- * bus noise, whereas DLS's tracks its iteration spread, and seeing the two
- * summaries side by side is what makes that attributable rather than asserted.
- */
+//
+//! Same five-number summary, but for counts rather than times - used for DLS's
+//! iteration distribution.  Printing it directly under the DLS latency rows is
+//! the point of the whole comparison: the analytic kernel's latency spread is
+//! bus noise, whereas DLS's tracks its iteration spread, and seeing the two
+//! summaries side by side is what makes that attributable rather than asserted.
+//
 #if HAVE_DLS
-static void samp_report_raw(const char *label, samples_t *s)
-{
-    if (s->n == 0) { xil_printf("  %s: no samples\r\n", label); return; }
+static void samp_report_raw(const char* label, samples_t* s) {
+    if (s->n == 0) {
+        xil_printf("  %s: no samples\r\n", label);
+        return;
+    }
     samp_sort(s);
 
     uint64_t sum = 0;
-    for (int i = 0; i < s->n; i++) sum += s->v[i];
+    for (int i = 0; i < s->n; i++)
+        sum += s->v[i];
 
-    xil_printf("  %-26s n=%3d  min=%6u  med=%6u  p95=%6u  max=%6u  mean=%6u\r\n",
-               label, s->n, s->v[0], s->v[s->n / 2],
-               s->v[(s->n * 95) / 100], s->v[s->n - 1],
-               (unsigned)(sum / s->n));
+    xil_printf(
+        "  %-26s n=%3d  min=%6u  med=%6u  p95=%6u  max=%6u  mean=%6u\r\n",
+        label, s->n, s->v[0], s->v[s->n / 2], s->v[(s->n * 95) / 100],
+        s->v[s->n - 1], (unsigned)(sum / s->n));
 }
 #endif
 
-/* ------------------------------------------------------------------ */
-/* Register-map self check                                             */
-/*                                                                     */
-/* The offsets in ik_regmap.h are generated by scripts/gen_regmap.py    */
-/* from the HLS output.  If that step was skipped, the checked-in       */
-/* provisional map may not match this build - so prove it before        */
-/* trusting a single measurement.                                       */
-/* ------------------------------------------------------------------ */
-static int verify_regmap(ik_dev_t *dev, uintptr_t in_base, uintptr_t out_base,
-                         const char *name)
-{
-    const int32_t pat[6] = { 0x00010000, (int32_t)0xFFFF0000, 0x12345678,
-                             0x0000BEEF, (int32_t)0x80000001, 0x7FFFFFFF };
+//! ------------------------------------------------------------------
+//! Register-map self check
+//!
+//! The offsets in ik_regmap.h are generated by scripts/gen_regmap.py
+//! from the HLS output.  If that step was skipped, the checked-in
+//! provisional map may not match this build - so prove it before
+//! trusting a single measurement.
+//! ------------------------------------------------------------------
+static int verify_regmap(ik_dev_t* dev, uintptr_t in_base, uintptr_t out_base,
+                         const char* name) {
+    const int32_t pat[6] = {0x00010000, (int32_t)0xFFFF0000, 0x12345678,
+                            0x0000BEEF, (int32_t)0x80000001, 0x7FFFFFFF};
     int ok = 1;
 
     for (int i = 0; i < 6; i++)
@@ -255,19 +264,20 @@ static int verify_regmap(ik_dev_t *dev, uintptr_t in_base, uintptr_t out_base,
     for (int i = 0; i < 6; i++) {
         uint32_t got = Xil_In32(dev->base + in_base + 4 * i);
         if (got != (uint32_t)pat[i]) {
-            xil_printf("  %s: input bank readback mismatch at +0x%02x: "
-                       "wrote 0x%08x read 0x%08x\r\n",
-                       name, (unsigned)(in_base + 4 * i),
-                       (unsigned)pat[i], (unsigned)got);
+            xil_printf(
+                "  %s: input bank readback mismatch at +0x%02x: "
+                "wrote 0x%08x read 0x%08x\r\n",
+                name, (unsigned)(in_base + 4 * i), (unsigned)pat[i],
+                (unsigned)got);
             ok = 0;
         }
     }
 
-    /* An idle kernel must report ap_idle. */
+    //! An idle kernel must report ap_idle.
     uint32_t ctrl = Xil_In32(dev->base + IK_ADDR_AP_CTRL);
     if (!(ctrl & IK_AP_IDLE)) {
-        xil_printf("  %s: ap_idle not set at reset (ap_ctrl=0x%08x)\r\n",
-                   name, (unsigned)ctrl);
+        xil_printf("  %s: ap_idle not set at reset (ap_ctrl=0x%08x)\r\n", name,
+                   (unsigned)ctrl);
         ok = 0;
     }
 
@@ -275,99 +285,105 @@ static int verify_regmap(ik_dev_t *dev, uintptr_t in_base, uintptr_t out_base,
     return ok;
 }
 
-/* ------------------------------------------------------------------ */
-/* iters < 0 suppresses the iteration column, which only DLS has. */
-static void print_pose_result(int i, const char *tag, int st,
-                              const float *q, const float *qg, int iters)
-{
+//! ------------------------------------------------------------------
+//! iters < 0 suppresses the iteration column, which only DLS has.
+static void print_pose_result(int i, const char* tag, int st, const float* q,
+                              const float* qg, int iters) {
     float worst = 0.0f;
     for (int j = 0; j < IK_DOF; j++) {
         float d = q[j] - qg[j];
-        while (d >  3.14159265f) d -= 6.28318531f;
-        while (d < -3.14159265f) d += 6.28318531f;
-        if (d < 0) d = -d;
-        if (d > worst) worst = d;
+        while (d > 3.14159265f)
+            d -= 6.28318531f;
+        while (d < -3.14159265f)
+            d += 6.28318531f;
+        if (d < 0)
+            d = -d;
+        if (d > worst)
+            worst = d;
     }
     if (iters >= 0)
-        xil_printf("    [%2d] %-16s status=%d  worst joint delta = %d urad"
-                   "  iters=%d\r\n",
-                   i, tag, st, (int)(worst * 1e6f), iters);
+        xil_printf(
+            "    [%2d] %-16s status=%d  worst joint delta = %d urad"
+            "  iters=%d\r\n",
+            i, tag, st, (int)(worst * 1e6f), iters);
     else
         xil_printf("    [%2d] %-16s status=%d  worst joint delta = %d urad\r\n",
                    i, tag, st, (int)(worst * 1e6f));
 }
 
-int main(void)
-{
-    /* Declared under the same guards as their use sites: a single-kernel
-     * bitstream is the normal case here, not the exception, and the absent
-     * kernel's state would otherwise sit unused in every such build. */
+int main(void) {
+//! Declared under the same guards as their use sites: a single-kernel
+//! bitstream is the normal case here, not the exception, and the absent
+//! kernel's state would otherwise sit unused in every such build.
 #if HAVE_ANALYTIC
-    ik_dev_t  analytic = { ANALYTIC_BASE };
+    ik_dev_t analytic = {ANALYTIC_BASE};
     samples_t s_an_hw, s_an_sw;
 #endif
 #if HAVE_DLS
-    ik_dev_t  dls = { DLS_BASE };
+    ik_dev_t dls = {DLS_BASE};
     samples_t s_dls_hw, s_dls_sw, s_dls_it, s_dls_sw_it;
 #endif
-    ik_dev_t  matmul = { MATMUL_BASE };
-    ik_dev_t  matinv = { MATINV_BASE };
+    ik_dev_t matmul = {MATMUL_BASE};
+    ik_dev_t matinv = {MATINV_BASE};
     samples_t s_mm, s_mi;
 
     init_platform_stub();
 
     xil_printf("\r\n");
-    xil_printf("==================================================================\r\n");
+    xil_printf(
+        "=================================================================="
+        "\r\n");
     xil_printf(" 6-DOF IK kernels - PL vs PS latency\r\n");
-    xil_printf("==================================================================\r\n");
+    xil_printf(
+        "=================================================================="
+        "\r\n");
     xil_printf(" global timer      : %u Hz\r\n", (unsigned)ik_timer_hz());
     xil_printf(" poses             : %d\r\n", IK_NVEC);
-    /* Which kernels this bitstream actually has.  Printed rather than assumed
-     * because the two IK kernels do not fit together on this part, so every
-     * log has to say which one produced it. */
+    //! Which kernels this bitstream actually has.  Printed rather than assumed
+    //! because the two IK kernels do not fit together on this part, so every
+    //! log has to say which one produced it.
     xil_printf(" kernels present   : %s%s%s%s\r\n",
-               HAVE_ANALYTIC ? "ik_analytic " : "",
-               HAVE_DLS      ? "ik_dls "      : "",
-               MATMUL_BASE   ? "mat_mul "     : "",
-               MATINV_BASE   ? "mat_inv"      : "");
+               HAVE_ANALYTIC ? "ik_analytic " : "", HAVE_DLS ? "ik_dls " : "",
+               MATMUL_BASE ? "mat_mul " : "", MATINV_BASE ? "mat_inv" : "");
 #if IK_REGMAP_GENERATED
     xil_printf(" register map      : generated from this build\r\n");
 #else
-    xil_printf(" register map      : PROVISIONAL - run scripts/gen_regmap.py\r\n");
+    xil_printf(
+        " register map      : PROVISIONAL - run scripts/gen_regmap.py\r\n");
 #endif
     xil_printf("\r\n");
 
     ik_timer_init();
 
-    /* ---- register map sanity ---- */
+    //! ---- register map sanity ----
     xil_printf("-- register map check --\r\n");
     int ok = 1;
 #if HAVE_ANALYTIC
-    ok &= verify_regmap(&analytic,
-                        XIK_ANALYTIC_KERNEL_CTRL_ADDR_POSE_BASE,
+    ok &= verify_regmap(&analytic, XIK_ANALYTIC_KERNEL_CTRL_ADDR_POSE_BASE,
                         XIK_ANALYTIC_KERNEL_CTRL_ADDR_Q_BASE, "analytic");
 #endif
 #if HAVE_DLS
-    ok &= verify_regmap(&dls,
-                        XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE,
+    ok &= verify_regmap(&dls, XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE,
                         XIK_DLS_KERNEL_CTRL_ADDR_Q_BASE, "dls");
 #endif
     if (!ok) {
-        xil_printf("\r\n  REGISTER MAP IS WRONG - refusing to report timings.\r\n");
-        xil_printf("  Run: make -C hls ip && python3 scripts/gen_regmap.py\r\n");
+        xil_printf(
+            "\r\n  REGISTER MAP IS WRONG - refusing to report timings.\r\n");
+        xil_printf(
+            "  Run: make -C hls ip && python3 scripts/gen_regmap.py\r\n");
         xil_printf("  then rebuild this application.\r\n");
         return 1;
     }
     xil_printf("  ok\r\n\r\n");
 
-    /* ---- correctness pass ---- */
+    //! ---- correctness pass ----
     xil_printf("-- correctness (first 8 poses) --\r\n");
     for (int i = 0; i < 8 && i < IK_NVEC; i++) {
         float pose[6], qg[6], qd[6], q[6];
         for (int j = 0; j < 6; j++) {
             pose[j] = ik_q2f(ik_pose_tbl[i][j]);
-            qg[j]   = ik_q2f(ik_qgold_tbl[i][j]);
-            qd[j]   = ik_q2f(ik_qdls_tbl[i][j]);
+            qg[j] = ik_q2f(ik_qgold_tbl[i][j]);
+            qd[j] = ik_q2f(ik_qdls_tbl[i][j]);
         }
 #if HAVE_ANALYTIC
         int st = ik_analytic_solve(&analytic, pose, ik_cfg_tbl[i], q, NULL);
@@ -377,19 +393,20 @@ int main(void)
         {
             float seed[6];
             int it = 0;
-            for (int j = 0; j < 6; j++) seed[j] = ik_q2f(ik_seed_tbl[i][j]);
+            for (int j = 0; j < 6; j++)
+                seed[j] = ik_q2f(ik_seed_tbl[i][j]);
             int sd = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
                                   DLS_MAX_ITER, q, &it, NULL, NULL);
-            /* Against ik_qdls_tbl, not ik_qgold_tbl.  IK is multi-valued and
-             * the two solvers land on different branches by design - see the
-             * note on the tables in ik_vectors.h.  Checked against the
-             * analytic branch this column read ~3.1 rad of error on poses the
-             * solver had in fact solved to within 1e-4 m. */
+            //! Against ik_qdls_tbl, not ik_qgold_tbl.  IK is multi-valued and
+            //! the two solvers land on different branches by design - see the
+            //! note on the tables in ik_vectors.h.  Checked against the
+            //! analytic branch this column read ~3.1 rad of error on poses the
+            //! solver had in fact solved to within 1e-4 m.
             print_pose_result(i, ik_tag_tbl[i], sd, q, qd, it);
-            /* The double-precision model's count for the same pose.  A
-             * systematic gap means quantisation moved the convergence path,
-             * which is a result rather than a failure - so report it, do not
-             * assert on it. */
+            //! The double-precision model's count for the same pose.  A
+            //! systematic gap means quantisation moved the convergence path,
+            //! which is a result rather than a failure - so report it, do not
+            //! assert on it.
             if (it != (int)ik_model_iters_tbl[i])
                 xil_printf("         (model needed %d)\r\n",
                            (int)ik_model_iters_tbl[i]);
@@ -399,13 +416,14 @@ int main(void)
     xil_printf("\r\n");
 
 #if HAVE_ANALYTIC
-    /* ---- analytic: PL vs PS ---- */
+    //! ---- analytic: PL vs PS ----
     samp_reset(&s_an_hw);
     samp_reset(&s_an_sw);
     for (int i = 0; i < IK_NVEC; i++) {
         float pose[6], q[6];
         uint32_t c;
-        for (int j = 0; j < 6; j++) pose[j] = ik_q2f(ik_pose_tbl[i][j]);
+        for (int j = 0; j < 6; j++)
+            pose[j] = ik_q2f(ik_pose_tbl[i][j]);
 
         ik_analytic_solve(&analytic, pose, ik_cfg_tbl[i], q, &c);
         samp_add(&s_an_hw, c);
@@ -418,11 +436,11 @@ int main(void)
 #endif
 
 #if HAVE_DLS
-    /* ---- DLS: PL vs PS, plus the iteration count behind each sample ----
-     *
-     * Seeded from ik_seed_tbl rather than from the previous solution: a warm
-     * start would make each pose's iteration count depend on the order the
-     * table happens to be in, and the spread is the measurement. */
+    //! ---- DLS: PL vs PS, plus the iteration count behind each sample ----
+    //
+    //! Seeded from ik_seed_tbl rather than from the previous solution: a warm
+    //! start would make each pose's iteration count depend on the order the
+    //! table happens to be in, and the spread is the measurement.
     samp_reset(&s_dls_hw);
     samp_reset(&s_dls_sw);
     samp_reset(&s_dls_it);
@@ -436,26 +454,26 @@ int main(void)
             seed[j] = ik_q2f(ik_seed_tbl[i][j]);
         }
 
-        ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
-                     q, &it, NULL, &c);
+        ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER, q,
+                     &it, NULL, &c);
         samp_add(&s_dls_hw, c);
         samp_add(&s_dls_it, (uint32_t)it);
 
         int it_sw = 0;
         uint64_t t0 = ik_timer_read();
-        ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
-                        q, &it_sw, NULL);
+        ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER, q,
+                        &it_sw, NULL);
         uint64_t t1 = ik_timer_read();
         samp_add(&s_dls_sw, (uint32_t)(t1 - t0));
-        /* The PS runs the same algorithm in double, so its iteration count is
-         * NOT automatically the PL's: quantisation moves where the residual
-         * crosses tol.  Without this the two latency rows look like a clean
-         * PL-vs-PS comparison when they may be solving to different depths. */
+        //! The PS runs the same algorithm in double, so its iteration count is
+        //! NOT automatically the PL's: quantisation moves where the residual
+        //! crosses tol.  Without this the two latency rows look like a clean
+        //! PL-vs-PS comparison when they may be solving to different depths.
         samp_add(&s_dls_sw_it, (uint32_t)it_sw);
     }
 #endif
 
-    /* ---- standalone matrix IPs ---- */
+    //! ---- standalone matrix IPs ----
     samp_reset(&s_mm);
     samp_reset(&s_mi);
     if (MATMUL_BASE && MATINV_BASE) {
@@ -464,7 +482,8 @@ int main(void)
             A[i] = 0.1f * (float)((i * 7) % 11) - 0.5f;
             B[i] = 0.1f * (float)((i * 5) % 13) - 0.6f;
         }
-        for (int i = 0; i < 6; i++) A[i * 6 + i] += 2.0f;   /* keep it invertible */
+        for (int i = 0; i < 6; i++)
+            A[i * 6 + i] += 2.0f;  //! keep it invertible
 
         for (int r = 0; r < 16; r++) {
             uint32_t c;
@@ -475,7 +494,7 @@ int main(void)
         }
     }
 
-    /* ---- report ---- */
+    //! ---- report ----
     xil_printf("-- latency, PS wall clock around the whole transaction --\r\n");
 #if HAVE_ANALYTIC
     samp_report("analytic  (PL)", &s_an_hw);
@@ -495,34 +514,43 @@ int main(void)
         samp_report("mat_mul 6x6x6 (PL)", &s_mm);
         samp_report("mat_inv 6x6   (PL)", &s_mi);
     } else {
-        /* Say so rather than silently omitting the rows - a missing section
-         * otherwise reads as a measurement that came out empty. */
-        xil_printf("  mat_mul / mat_inv    not in this bitstream (skipped)\r\n");
+        //! Say so rather than silently omitting the rows - a missing section
+        //! otherwise reads as a measurement that came out empty.
+        xil_printf(
+            "  mat_mul / mat_inv    not in this bitstream (skipped)\r\n");
     }
 
     xil_printf("\r\n");
-    xil_printf("Read this against 'make -C hls reports': the HLS latency counts\r\n");
-    xil_printf("PL cycles between ap_start and ap_done, the figures above add\r\n");
-    xil_printf("the AXI4-Lite argument traffic.  For kernels this small the\r\n");
+    xil_printf(
+        "Read this against 'make -C hls reports': the HLS latency counts\r\n");
+    xil_printf(
+        "PL cycles between ap_start and ap_done, the figures above add\r\n");
+    xil_printf(
+        "the AXI4-Lite argument traffic.  For kernels this small the\r\n");
     xil_printf("difference is not a rounding error.\r\n");
 #if HAVE_DLS
     xil_printf("\r\n");
-    xil_printf("max/med on the DLS rows is the real-time figure of merit, and\r\n");
-    xil_printf("the iteration summary below it is where that number comes from:\r\n");
-    xil_printf("the analytic kernel's spread is bus noise, DLS's is the solver.\r\n");
-    xil_printf("A larger part does not bound it - it only makes each iteration\r\n");
+    xil_printf(
+        "max/med on the DLS rows is the real-time figure of merit, and\r\n");
+    xil_printf(
+        "the iteration summary below it is where that number comes from:\r\n");
+    xil_printf(
+        "the analytic kernel's spread is bus noise, DLS's is the solver.\r\n");
+    xil_printf(
+        "A larger part does not bound it - it only makes each iteration\r\n");
     xil_printf("cheaper.  Compare against the histogram tb_ik_dls prints.\r\n");
 #endif
-    xil_printf("==================================================================\r\n");
+    xil_printf(
+        "=================================================================="
+        "\r\n");
 
     return 0;
 }
 
-/* Kept separate so the cache policy used for the measurements is explicit and
- * in one place: both caches on, which is the realistic configuration for a
- * control loop and the one that makes the PS reference honest. */
-void init_platform_stub(void)
-{
+//! Kept separate so the cache policy used for the measurements is explicit and
+//! in one place: both caches on, which is the realistic configuration for a
+//! control loop and the one that makes the PS reference honest.
+void init_platform_stub(void) {
     Xil_DCacheEnable();
     Xil_ICacheEnable();
 }

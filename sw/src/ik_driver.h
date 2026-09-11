@@ -3,121 +3,119 @@
 
 #include <stdint.h>
 
-/*
- * Vitis compiles the whole application with g++, .c files included, so every
- * declaration here is seen in a C++ translation unit and would be mangled.
- * ik_sw_ref.cpp defines its half of this interface inside extern "C" - without
- * a matching guard the two spellings do not meet and the reference goes
- * undefined at link time, long after every file has compiled cleanly.
- */
+//
+//! Vitis compiles the whole application with g++, .c files included, so every
+//! declaration here is seen in a C++ translation unit and would be mangled.
+//! ik_sw_ref.cpp defines its half of this interface inside extern "C" - without
+//! a matching guard the two spellings do not meet and the reference goes
+//! undefined at link time, long after every file has compiled cleanly.
+//
 #ifdef __cplusplus
 extern "C" {
 #endif
 
-/*
- * Bare-metal driver for the four HLS kernels.
- *
- * Register maps
- * -------------
- * Vitis HLS generates an AXI4-Lite control bank per kernel.  The offsets below
- * MUST be checked against the generated headers after any change to a kernel's
- * argument list - HLS assigns them by order and size, and adding one scalar
- * shifts everything after it.  The generated files are:
- *
- *   find hls/build/<kernel> -path '*impl/ip/drivers*' -name 'x<kernel>_hw.h'
- *
- * verify_reg_map() in main.c does a runtime sanity check by writing a known
- * pattern and reading it back, which catches a stale map before it produces
- * plausible-looking wrong answers.
- *
- * The AP_CTRL block is common to all of them:
- *   bit 0  ap_start   (write 1 to launch; self-clearing)
- *   bit 1  ap_done    (read)
- *   bit 2  ap_idle    (read)
- *   bit 3  ap_ready   (read)
- *   bit 7  auto_restart
- *
- * Fixed point
- * -----------
- * Every data word is signed Q16.16: value = raw / 65536.0.
- */
+//
+//! Bare-metal driver for the four HLS kernels.
+//
+//! Register maps
+//! -------------
+//! Vitis HLS generates an AXI4-Lite control bank per kernel.  The offsets below
+//! MUST be checked against the generated headers after any change to a kernel's
+//! argument list - HLS assigns them by order and size, and adding one scalar
+//! shifts everything after it.  The generated files are:
+//
+//! find hls/build/<kernel> -path '*impl/ip/drivers*' -name 'x<kernel>_hw.h'
+//
+//! verify_reg_map() in main.c does a runtime sanity check by writing a known
+//! pattern and reading it back, which catches a stale map before it produces
+//! plausible-looking wrong answers.
+//
+//! The AP_CTRL block is common to all of them:
+//! bit 0  ap_start   (write 1 to launch; self-clearing)
+//! bit 1  ap_done    (read)
+//! bit 2  ap_idle    (read)
+//! bit 3  ap_ready   (read)
+//! bit 7  auto_restart
+//
+//! Fixed point
+//! -----------
+//! Every data word is signed Q16.16: value = raw / 65536.0.
+//
 
-#define IK_FRAC_BITS  16
+#define IK_FRAC_BITS 16
 #define IK_FRAC_SCALE 65536.0f
 
-#define IK_DOF     6
+#define IK_DOF 6
 #define IK_MAT_MAX 6
 
-/* ---- ap_ctrl ---- */
+//! ---- ap_ctrl ----
 #define IK_ADDR_AP_CTRL 0x00
-#define IK_AP_START     0x1
-#define IK_AP_DONE      0x2
-#define IK_AP_IDLE      0x4
-#define IK_AP_READY     0x8
+#define IK_AP_START 0x1
+#define IK_AP_DONE 0x2
+#define IK_AP_IDLE 0x4
+#define IK_AP_READY 0x8
 
-/* ---- status codes, mirroring hls/include/ik_config.hpp ---- */
-#define IK_OK           0
-#define IK_ERR_UNREACH  1
-#define IK_ERR_NO_CONV  2
+//! ---- status codes, mirroring hls/include/ik_config.hpp ----
+#define IK_OK 0
+#define IK_ERR_UNREACH 1
+#define IK_ERR_NO_CONV 2
 #define IK_ERR_SINGULAR 3
-#define IK_ERR_BADDIM   4
+#define IK_ERR_BADDIM 4
 
-/* ---- analytic branch selection ---- */
+//! ---- analytic branch selection ----
 #define IK_CFG_SHOULDER 0x1
-#define IK_CFG_ELBOW    0x2
-#define IK_CFG_WRIST    0x4
+#define IK_CFG_ELBOW 0x2
+#define IK_CFG_WRIST 0x4
 
 typedef int32_t ik_word_t;
 
-/* A kernel instance: base address plus the offsets for its arguments. */
+//! A kernel instance: base address plus the offsets for its arguments.
 typedef struct {
     uintptr_t base;
 } ik_dev_t;
 
-/* Q16.16 conversion. */
-static inline ik_word_t ik_f2q(float v)
-{
+//! Q16.16 conversion.
+static inline ik_word_t ik_f2q(float v) {
     float s = v * IK_FRAC_SCALE;
     return (ik_word_t)(s >= 0.0f ? (s + 0.5f) : (s - 0.5f));
 }
 
-static inline float ik_q2f(ik_word_t w)
-{
+static inline float ik_q2f(ik_word_t w) {
     return (float)w / IK_FRAC_SCALE;
 }
 
-/* ---------------- kernel entry points ---------------- */
+//! ---------------- kernel entry points ----------------
 
-/* Each returns the kernel's status word, and writes the elapsed PL-clock
- * cycles measured by the PS global timer into *cycles when it is non-NULL. */
+//! Each returns the kernel's status word, and writes the elapsed PL-clock
+//! cycles measured by the PS global timer into *cycles when it is non-NULL.
 
-int ik_analytic_solve(ik_dev_t *dev, const float pose[6], int cfg,
-                      float q_out[6], uint32_t *cycles);
+int ik_analytic_solve(ik_dev_t* dev, const float pose[6], int cfg,
+                      float q_out[6], uint32_t* cycles);
 
-int ik_dls_solve(ik_dev_t *dev, const float pose[6], const float q_seed[6],
-                 float lambda, float tol, int max_iter,
-                 float q_out[6], int *iters, float *resid, uint32_t *cycles);
+int ik_dls_solve(ik_dev_t* dev, const float pose[6], const float q_seed[6],
+                 float lambda, float tol, int max_iter, float q_out[6],
+                 int* iters, float* resid, uint32_t* cycles);
 
-int ik_matmul(ik_dev_t *dev, int m, int k, int n, int ta, int tb,
-              const float *A, const float *B, float *C, uint32_t *cycles);
+int ik_matmul(ik_dev_t* dev, int m, int k, int n, int ta, int tb,
+              const float* A, const float* B, float* C, uint32_t* cycles);
 
-int ik_matinv(ik_dev_t *dev, int n, const float *A, float *Ainv,
-              uint32_t *cycles);
+int ik_matinv(ik_dev_t* dev, int n, const float* A, float* Ainv,
+              uint32_t* cycles);
 
-/* ---------------- software reference (runs on the A9) ---------------- */
-/* Same algorithms in float, for the PS-vs-PL comparison. */
+//! ---------------- software reference (runs on the A9) ----------------
+//! Same algorithms in float, for the PS-vs-PL comparison.
 int ik_analytic_solve_sw(const float pose[6], int cfg, float q_out[6]);
-int ik_dls_solve_sw(const float pose[6], const float q_seed[6],
-                    float lambda, float tol, int max_iter,
-                    float q_out[6], int *iters, float *resid);
+int ik_dls_solve_sw(const float pose[6], const float q_seed[6], float lambda,
+                    float tol, int max_iter, float q_out[6], int* iters,
+                    float* resid);
 
-/* ---------------- cycle counter ---------------- */
-void     ik_timer_init(void);
-uint64_t ik_timer_read(void);       /* free-running, CPU_3x2x ticks */
+//! ---------------- cycle counter ----------------
+void ik_timer_init(void);
+uint64_t ik_timer_read(void);  //! free-running, CPU_3x2x ticks
 uint32_t ik_timer_hz(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* IK_DRIVER_H */
+#endif  //! IK_DRIVER_H

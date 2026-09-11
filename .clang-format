@@ -1,0 +1,22 @@
+---
+# Google C++ Style Guide formatting configuration for robotics-fpga-investigations
+# Reference: https://google.github.io/styleguide/cppguide.html
+
+BasedOnStyle: Google
+ColumnLimit: 80
+IndentWidth: 4
+UseTab: Never
+NamespaceIndentation: All
+PointerAlignment: Left
+ReferenceAlignment: Left
+BreakBeforeBraces: Attach
+AllowShortFunctionsOnASingleLine: Inline
+AllowShortIfStatementsOnASingleLine: Never
+AllowShortLoopsOnASingleLine: false
+AlignAfterOpenBracket: Align
+AlignOperands: AlignAfterOperator
+AlignTrailingComments: true
+SpaceAfterCStyleCast: false
+SpaceBeforeParens: ControlStatements
+ReflowComments: true
+CommentPragmas: '^\s*pragma\s+(HLS|omp)'
