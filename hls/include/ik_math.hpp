@@ -60,6 +60,27 @@ namespace ikm {
 #endif
     }
 
+    //! Divide by 2^n, exactly, in either build.
+    //!
+    //! Same contract as cshift() above and for the same reason: the DLS trust
+    //! region (ik_config.hpp) scales its step by a power of two, and if the
+    //! float and fixed builds disagreed about that scaling they would follow
+    //! different iteration trajectories - which is precisely the confound the
+    //! host regression exists to avoid.  A right shift on ap_fixed and a
+    //! power-of-two divide on double are both exact, so they cannot.
+    //!
+    //! @param v Value to scale
+    //! @param n Number of halvings (>= 0)
+    //! @return  v / 2^n
+    inline ik_real_t halve(ik_real_t v, int n) {
+#pragma HLS INLINE
+#ifdef IK_USE_FLOAT
+        return v / (double)((uint64_t)1 << n);
+#else
+        return (ik_real_t)(v >> n);
+#endif
+    }
+
     //! Wrap an angle into the range [-π, π].
     //!
     //! Reduces any angle to the principal range using four conditional folds,

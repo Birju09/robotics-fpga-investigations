@@ -240,8 +240,12 @@ def gen_c_header(n=48, path=None):
  *
  *   1  ik_model_iters_tbl, DLS tail poses
  *   2  ik_qdls_tbl
+ *   3  DLS trust region: ik_qdls_tbl and ik_model_iters_tbl now come from the
+ *      CLAMPED solver, matching the kernel.  The tail POSES are unchanged -
+ *      their selection is deliberately frozen on the unclamped solver so the
+ *      workload stays fixed across solver changes.
  */
-#define IK_VECTORS_VERSION 2
+#define IK_VECTORS_VERSION 3
 
 #define IK_NVEC %d
 
@@ -319,6 +323,9 @@ def _find_dls_tail(count, floor=8, ceiling=MAX_ITER // 2,
     tight perturbation cannot produce a tail no matter which pose it is
     applied to.
 
+    Selection runs the UNCLAMPED solver (step_max=0) and is frozen there on
+    purpose - see the comment at the call below.
+
     Returns a spread across the tail, not `count` copies of the worst case.
     A table of only extreme poses would overstate the median as badly as the
     old one understated the maximum; what the real-time argument needs is the
@@ -335,8 +342,16 @@ def _find_dls_tail(count, floor=8, ceiling=MAX_ITER // 2,
         if not M.ik_analytic(Tq)[1]:
             continue
         seed = q_arr(q + rng.uniform(-1.2, 1.2, size=6))
-        _, iters, _, conv = M.ik_dls(Tq, seed, lam=LAMBDA,
-                                     max_iter=MAX_ITER, tol=TOL)
+        # step_max=0: the UNCLAMPED solver, deliberately, even though the
+        # kernel now clamps.  The selection criterion has to be frozen or the
+        # experiment eats itself - improve the solver, and a tail selected with
+        # the improved solver simply picks harder poses until the iteration
+        # counts look the same as before, reporting no improvement no matter
+        # how large one is.  Holding the workload fixed is what makes a solver
+        # change measurable.  (It also keeps this table comparable with the
+        # hardware runs taken before the trust region existed.)
+        _, iters, _, conv = M.ik_dls(Tq, seed, lam=LAMBDA, max_iter=MAX_ITER,
+                                     tol=TOL, step_max=0.0)
         # Converged, and with margin below the cap.  A pose that reaches
         # MAX_ITER returns IK_ERR_NO_CONV and would make the correctness
         # column meaningless; one that lands exactly ON it is worse, because

@@ -33,7 +33,7 @@ hls/tb/         C++ testbenches (run under csim AND as a host regression)
 hls/cfg/        Vitis HLS 2025.2 config files, one per IP
 scripts/        Vivado block design, register-map extraction, Vitis app build
 sw/src/         bare-metal driver + timing harness
-docs/           timing methodology
+docs/           technical manual + timing methodology
 ```
 
 Four separately packaged IPs:
@@ -206,12 +206,35 @@ AXI4-Lite accesses per solve. For kernels this small that gap is not a rounding
 error, and comparing the two is part of the exercise. See
 [docs/timing_methodology.md](docs/timing_methodology.md).
 
+For a from-first-principles derivation of the kinematics, the two solvers, the
+fixed-point number format, and the HLS/hardware realisation — with the
+practical build and measurement defects encountered along the way — see
+[docs/technical_manual.md](docs/technical_manual.md).
+
 ---
 
 ## Status
 
-Verified: the golden model, all four kernels' algorithms (host regression, all
-passing), and the numeric format choice.
+**[STATUS.md](STATUS.md) is the current status log** — what is on hardware, the
+measured numbers, and what is open. The summary:
+
+| kernel | on hardware | PL median | max/med |
+|---|---|---|---|
+| `ik_analytic_kernel` | yes, 80 MHz | 10744 ns | **1.00** |
+| `ik_dls_kernel` | yes, 80 MHz | 64036 ns | **5.48** |
+
+Both fit only one at a time (~345 DSP against this part's 220), so they are
+built and measured separately at the same clock.
+
+That 5.48 is the result the project was built to produce, and it decomposes
+cleanly: DLS latency is `230 ns + 15952 ns × iterations`, with the
+per-iteration cost constant to 0.4% across the whole pose set. The AXI4-Lite
+overhead that dominates the analytic kernel's error bars is 0.5% of a median
+DLS solve. All of the spread is iteration count. STATUS.md works through what
+can and cannot be done about that.
+
+The rest of this section is the build history that got there; it is reproduced
+in STATUS.md alongside the rest.
 
 A first full run of `make -C hls syn/ip` and `scripts/build_vivado.tcl` against
 2025.2 got through `opt_design` and failed `place_design`, needing roughly 3x

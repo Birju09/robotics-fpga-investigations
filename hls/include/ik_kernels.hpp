@@ -55,6 +55,10 @@ namespace iks {
     //! @param lambda   Damping coefficient for numerical stability
     //! @param tol      Convergence tolerance for task-space residual norm
     //! @param max_iter Maximum iteration count before forced termination
+    //! @param step_max Trust region: bound on |dq|_inf per iteration, radians.
+    //! 0 disables the clamp.  Scaled by a power of two, so the
+    //! effective bound is (step_max/2, step_max] - see the trust
+    //! region block in ik_config.hpp
     //! @param q        Output joint angle solution (6 elements, in radians)
     //! @param iters    Output pointer to receive actual iteration count
     //! executed
@@ -67,7 +71,8 @@ namespace iks {
     //!   - IK_ERR_SINGULAR: Jacobian became singular during iteration
     int dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
             const ik_real_t q_seed[IK_DOF], ik_real_t lambda, ik_real_t tol,
-            int max_iter, ik_real_t q[IK_DOF], int* iters, ik_real_t* resid);
+            int max_iter, ik_real_t step_max, ik_real_t q[IK_DOF], int* iters,
+            ik_real_t* resid);
 
 }  // namespace iks
 
@@ -102,14 +107,17 @@ extern "C" void ik_analytic_kernel(const ik_word_t pose[IK_DOF], int cfg,
 //! @param lambda    Damping coefficient for numerical stability (Q16.16)
 //! @param tol       Convergence tolerance for residual norm (Q16.16)
 //! @param max_iter  Maximum iteration count
+//! @param step_max  Trust region: bound on |dq|_inf per iteration (Q16.16
+//!                  radians); 0 disables the clamp
 //! @param q        Output joint angles (6 elements) in radians
 //! @param iters    Output pointer to iteration count executed
 //! @param resid    Output pointer to final task-space residual norm (Q16.16)
 //! @param status   Output status: 0 on convergence, non-zero on error
 extern "C" void ik_dls_kernel(const ik_word_t pose[IK_DOF],
                               const ik_word_t q_seed[IK_DOF], ik_word_t lambda,
-                              ik_word_t tol, int max_iter, ik_word_t q[IK_DOF],
-                              int* iters, ik_word_t* resid, int* status);
+                              ik_word_t tol, int max_iter, ik_word_t step_max,
+                              ik_word_t q[IK_DOF], int* iters,
+                              ik_word_t* resid, int* status);
 //! @}
 
 #endif  //! IK_KERNELS_HPP

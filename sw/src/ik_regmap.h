@@ -58,20 +58,27 @@
 #define XIK_ANALYTIC_KERNEL_CTRL_ADDR_Q_BASE 0x60
 #define XIK_ANALYTIC_KERNEL_CTRL_ADDR_Q_HIGH 0x7f
 
-//! ---- ik_dls_kernel(pose[6], q_seed[6], lambda, tol, max_iter,
+//! ---- ik_dls_kernel(pose[6], q_seed[6], lambda, tol, max_iter, step_max,
 //! q[6], iters, resid, status) ----
+//
+//! step_max (the DLS trust region) was added after this provisional map was
+//! first written, which pushed every scalar after it up by one slot and moved
+//! the three arrays.  That is exactly the kind of edit the generated map
+//! exists for: run scripts/gen_regmap.py.  main.c's write/read-back check
+//! catches it if you do not.
 #define XIK_DLS_KERNEL_CTRL_ADDR_AP_CTRL 0x00
 #define XIK_DLS_KERNEL_CTRL_ADDR_LAMBDA_DATA 0x10
 #define XIK_DLS_KERNEL_CTRL_ADDR_TOL_DATA 0x18
 #define XIK_DLS_KERNEL_CTRL_ADDR_MAX_ITER_DATA 0x20
-#define XIK_DLS_KERNEL_CTRL_ADDR_ITERS_DATA 0x28
-#define XIK_DLS_KERNEL_CTRL_ADDR_RESID_DATA 0x30
-#define XIK_DLS_KERNEL_CTRL_ADDR_STATUS_DATA 0x38
-#define XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE 0x40
-#define XIK_DLS_KERNEL_CTRL_ADDR_POSE_HIGH 0x5f
-#define XIK_DLS_KERNEL_CTRL_ADDR_Q_SEED_BASE 0x60
-#define XIK_DLS_KERNEL_CTRL_ADDR_Q_SEED_HIGH 0x7f
-#define XIK_DLS_KERNEL_CTRL_ADDR_Q_BASE 0x80
-#define XIK_DLS_KERNEL_CTRL_ADDR_Q_HIGH 0x9f
+#define XIK_DLS_KERNEL_CTRL_ADDR_STEP_MAX_DATA 0x28
+#define XIK_DLS_KERNEL_CTRL_ADDR_ITERS_DATA 0x30
+#define XIK_DLS_KERNEL_CTRL_ADDR_RESID_DATA 0x38
+#define XIK_DLS_KERNEL_CTRL_ADDR_STATUS_DATA 0x40
+#define XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE 0x80
+#define XIK_DLS_KERNEL_CTRL_ADDR_POSE_HIGH 0x9f
+#define XIK_DLS_KERNEL_CTRL_ADDR_Q_SEED_BASE 0xa0
+#define XIK_DLS_KERNEL_CTRL_ADDR_Q_SEED_HIGH 0xbf
+#define XIK_DLS_KERNEL_CTRL_ADDR_Q_BASE 0xc0
+#define XIK_DLS_KERNEL_CTRL_ADDR_Q_HIGH 0xdf
 
 #endif  //! IK_REGMAP_H

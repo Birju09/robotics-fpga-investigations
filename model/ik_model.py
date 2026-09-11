@@ -233,13 +233,50 @@ def pose_error(T_des, T_cur):
     return np.concatenate([ep, eo])
 
 
-def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step=1.0):
+# Trust region.  Must match IK_DLS_STEP_MAX_DEFAULT / IK_DLS_STEP_HALVINGS in
+# hls/include/ik_config.hpp, which is where the measurements behind these
+# values are recorded.
+DLS_STEP_MAX = 1.5
+DLS_STEP_HALVINGS = 8
+
+
+def clamp_step(dq, step_max, halvings=DLS_STEP_HALVINGS):
     """
-    q <- q + J^T (J J^T + lam^2 I)^-1 e
+    Bound |dq|_inf by halving, exactly as iks::dls() does in hardware.
+
+    Halving rather than scaling by step_max/|dq|_inf: a power of two is exact
+    in both the double model and the Q16.16 kernel, so the two follow the same
+    trajectory through the clamp.  The effective radius is therefore
+    (step_max/2, step_max], not step_max - measured as costing nothing against
+    an exact scale (see model/sweep_dls.py).
+
+    Scaling, not per-joint clipping: clipping would change the step's
+    direction, which is what the least-squares solve determined.
+    """
+    if step_max <= 0.0:
+        return dq
+    m = float(np.max(np.abs(dq)))
+    sh = 0
+    for _ in range(halvings):
+        if m > step_max:
+            m /= 2.0
+            sh += 1
+    return dq / float(1 << sh)
+
+
+def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step_max=DLS_STEP_MAX):
+    """
+    q <- q + clamp( J^T (J J^T + lam^2 I)^-1 e )
 
     Returns (q, iters, err_norm, converged).  `iters` is the datum the
     real-time study cares about: it is data-dependent and unbounded in general,
     which is exactly what the fixed-latency analytic core is being compared to.
+
+    `step_max` bounds |dq|_inf per iteration.  Pass 0 for the undamped-step
+    behaviour this solver had before the trust region was added - that is the
+    baseline every measurement in ik_config.hpp's trust region block is quoted
+    against, and gen_vectors.py uses it deliberately to keep the pose table
+    fixed across solver changes.
     """
     q = np.array(q0, dtype=float)
     I6 = np.eye(6)
@@ -251,8 +288,8 @@ def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step=1.0):
             return q, k, err, True
         J = jacobian(q)
         A = J @ J.T + (lam * lam) * I6
-        dq = J.T @ np.linalg.solve(A, e)
-        q = q + step * dq
+        dq = clamp_step(J.T @ np.linalg.solve(A, e), step_max)
+        q = wrap_pi(q + dq)
     T = fk(q)
     err = float(np.linalg.norm(pose_error(T_des, T)))
     return q, max_iter, err, err < tol

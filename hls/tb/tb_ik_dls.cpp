@@ -23,6 +23,8 @@ int main() {
 
     const ik_word_t LAMBDA = (ik_word_t)(IK_DLS_LAMBDA_DEFAULT * 65536.0 + 0.5);
     const ik_word_t TOLW = (ik_word_t)(IK_DLS_TOL_DEFAULT * 65536.0 + 0.5);
+    const ik_word_t STEPW =
+        (ik_word_t)(IK_DLS_STEP_MAX_DEFAULT * 65536.0 + 0.5);
 
     std::vector<int> hist;
     int converged = 0, total = 0;
@@ -52,8 +54,8 @@ int main() {
 
         ik_word_t q[IK_DOF], resid;
         int iters = -1, status = -1;
-        ik_dls_kernel(pose, seed, LAMBDA, TOLW, IK_DLS_MAX_ITER, q, &iters,
-                      &resid, &status);
+        ik_dls_kernel(pose, seed, LAMBDA, TOLW, IK_DLS_MAX_ITER, STEPW, q,
+                      &iters, &resid, &status);
 
         total++;
         if (status == IK_OK)

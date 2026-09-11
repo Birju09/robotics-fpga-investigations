@@ -71,6 +71,113 @@ static const double IK_DH_SA[IK_DOF] = {1.0, 0.0, 1.0, -1.0, 1.0, 0.0};
 #define IK_DLS_TOL_DEFAULT 0.001
 #define IK_DLS_MAX_ITER 64
 
+//! ---------------- DLS trust region ----------------
+//
+//! Bound on |dq|_inf per iteration, radians.  A runtime register like lambda
+//! and tol, for the same reason: it changes the shape of the iteration
+//! distribution, which is the thing being measured, so it must be sweepable
+//! without a re-synthesis.  0 disables the clamp.
+//
+//! Why it exists.  At lambda = 0.02 the damping is nearly nil, so
+//! dq = J^T (J J^T + lambda^2 I)^-1 e is essentially the full Newton step.
+//! From a seed far from the solution that step is taken well outside the range
+//! where the linearisation holds: instrumenting the model over far seeds
+//! (model/sweep_dls.py) measured |dq|_inf reaching 12.7 rad on a 6R arm whose
+//! joints span +-2.9.  The solver lands somewhere unrelated and spends its
+//! iteration budget finding its way back.
+//
+//! Measured over ten independent 48-pose tables of the harness's own
+//! composition - 480 poses, model/sweep_dls.py:
+//
+//!                      conv     med  p95  max  mean   miss@16
+//!   no clamp        480/480       4   18   32  6.38        30
+//!   clamp 1.5 rad   477/480       4   12   64  5.82        14
+//
+//! miss@16 is the count unsolved within a 16-iteration deadline (255 us at the
+//! measured 15,952 ns/iteration).  That is the column to read: the clamp
+//! roughly halves the fraction of poses that miss a deadline, and takes p95
+//! from 18 iterations to 12.  The median does not move - the clamp does not
+//! fire on a well-seeded solve at all - and the cost is about 3 poses in 480
+//! that stop converging inside the 64-iteration cap.
+//
+//! On an UNSELECTED far-seeded population (300 poses, seeds +-1.2 rad) the
+//! clamp is a clear win with no such cost: convergence rises from 277/300 to
+//! 288/300 and the mean falls from 14.82 iterations to 11.10.
+//
+//! Read the two together, because the first table is biased toward the
+//! baseline and the second is not.  gen_vectors.py builds its tail block by
+//! keeping poses the UNCLAMPED solver converges on in 8..32 iterations, so on
+//! that table the unclamped solver scores 480/480 with max=32 by construction,
+//! not by merit.  Any solver change can only lose poses from a set defined by
+//! its predecessor succeeding on them.  The selection has to be frozen or the
+//! experiment eats itself (see gen_vectors._find_dls_tail), but frozen is not
+//! the same as neutral, and the 480-pose table understates the clamp.
+//
+//! Radius swept over {0.5 ... 4.0} on both populations; 1.5 and 2.0 are joint
+//! best and the curve is flat between them.  Tightening below ~0.7 starts
+//! suppressing legitimate Newton steps and every column gets worse.  An
+//! earlier draft of this comment said 1.0, fitted to a single 48-pose draw;
+//! at that sample size the radius choice is inside the noise, which is why the
+//! numbers above are over ten tables.
+//
+//! One thing the clamp cannot fix, from the same experiment: about 40% of the
+//! poses that never converge are sitting at a genuine local minimum of
+//! ||e||^2, not overshooting.  That needs a restart from a different seed,
+//! which is a different experiment.
+//
+#define IK_DLS_STEP_MAX_DEFAULT 1.5
+
+//
+//! The clamp scales by a power of two, not by the exact factor R/|dq|_inf.
+//
+//! Two reasons, and the second is the one that matters.  It costs no
+//! multiplier - a right shift on ap_fixed, at 180 of this part's 220 DSP48E1
+//! slices - and it is exact in both builds, so the float reference and the
+//! Q16.16 kernel follow the same trajectory through the clamp and the host
+//! regression still attributes quantisation error the way it was built to.  An
+//! exact R/|dq| scale would need a reciprocal, whose fixed-point and double
+//! forms differ by an LSB, and the clamp would then be a second source of
+//! divergence between the two builds on top of the arithmetic.
+//
+//! It costs a little: the effective radius lands in (R/2, R] rather than on R.
+//! Measured against an exact step_max/|dq| scale, p95 and max are identical
+//! and the mean differs in the second decimal.  Not worth a reciprocal.
+//
+//! Eight stages bounds |dq|_inf at 256*R, far above the 12.7 rad ever
+//! observed; four were already enough on the measured workload.  The extra
+//! four are a shallow compare chain on one scalar, not on the six components.
+//
+#define IK_DLS_STEP_HALVINGS 8
+
+//
+//! Adaptive lambda (Levenberg-Marquardt) was tried here and is NOT implemented,
+//! which is a measurement rather than an omission.  Both forms, on a 48-pose
+//! table (model/sweep_dls.py --lm):
+//
+//!                             conv    med  p95  max   mean
+//!   baseline                 48/48      4   17   32   6.58
+//!   trust region             48/48      4   10   17   5.31
+//!   LM, raise lambda only    47/48      4   18   64   7.54
+//!   LM, with backtracking    43/48      4   64   64  11.17
+//
+//! Textbook LM rejects a step that increased the residual and retries with more
+//! damping.  That is a good trade when re-evaluating the residual is cheap
+//! relative to a full iteration.  Here it is not: this kernel's cost is one
+//! FK+Jacobian per loop pass, so a rejected step costs a whole 16 us iteration.
+//! 4,995 rejections over 300 far-seeded poses, and lambda ratchets up faster
+//! than the accept path brings it down, so the solver ends up crawling with
+//! heavy damping - convergence fell from 48/48 to 43/48.
+//
+//! The non-backtracking form (raise lambda when the residual grew, keep the
+//! step) avoids the wasted pass and is roughly neutral, and adds nothing at all
+//! once the clamp is in.  Neither is worth the registers.
+//
+//! Note also what the diagnostic found about the poses that never converge:
+//! about 40% of them plateau at a local minimum of ||e||^2 - a genuine
+//! stationary point, not an overshoot.  No damping policy fixes that; it needs
+//! a restart from a different seed, which is a different experiment.
+//
+
 //! ---------------- PL resource / latency trade ----------------
 //
 //! ik_dls_kernel synthesised to roughly 126% of the xc7z020's 220 DSP48E1

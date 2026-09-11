@@ -92,9 +92,11 @@ static inline float ik_q2f(ik_word_t w) {
 int ik_analytic_solve(ik_dev_t* dev, const float pose[6], int cfg,
                       float q_out[6], uint32_t* cycles);
 
+//! step_max bounds |dq|_inf per DLS iteration, in radians; 0 disables the
+//! clamp.  See the trust region block in hls/include/ik_config.hpp.
 int ik_dls_solve(ik_dev_t* dev, const float pose[6], const float q_seed[6],
-                 float lambda, float tol, int max_iter, float q_out[6],
-                 int* iters, float* resid, uint32_t* cycles);
+                 float lambda, float tol, int max_iter, float step_max,
+                 float q_out[6], int* iters, float* resid, uint32_t* cycles);
 
 int ik_matmul(ik_dev_t* dev, int m, int k, int n, int ta, int tb,
               const float* A, const float* B, float* C, uint32_t* cycles);
@@ -106,8 +108,8 @@ int ik_matinv(ik_dev_t* dev, int n, const float* A, float* Ainv,
 //! Same algorithms in float, for the PS-vs-PL comparison.
 int ik_analytic_solve_sw(const float pose[6], int cfg, float q_out[6]);
 int ik_dls_solve_sw(const float pose[6], const float q_seed[6], float lambda,
-                    float tol, int max_iter, float q_out[6], int* iters,
-                    float* resid);
+                    float tol, int max_iter, float step_max, float q_out[6],
+                    int* iters, float* resid);
 
 //! ---------------- cycle counter ----------------
 void ik_timer_init(void);

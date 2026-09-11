@@ -156,8 +156,8 @@ int ik_analytic_solve(ik_dev_t* dev, const float pose[6], int cfg,
 //! ---------------- DLS IK ----------------
 
 int ik_dls_solve(ik_dev_t* dev, const float pose[6], const float q_seed[6],
-                 float lambda, float tol, int max_iter, float q_out[6],
-                 int* iters, float* resid, uint32_t* cycles) {
+                 float lambda, float tol, int max_iter, float step_max,
+                 float q_out[6], int* iters, float* resid, uint32_t* cycles) {
     int to = 0;
     uint64_t t0 = ik_timer_read();
 
@@ -166,6 +166,7 @@ int ik_dls_solve(ik_dev_t* dev, const float pose[6], const float q_seed[6],
     WR(dev, XIK_DLS_KERNEL_CTRL_ADDR_LAMBDA_DATA, ik_f2q(lambda));
     WR(dev, XIK_DLS_KERNEL_CTRL_ADDR_TOL_DATA, ik_f2q(tol));
     WR(dev, XIK_DLS_KERNEL_CTRL_ADDR_MAX_ITER_DATA, max_iter);
+    WR(dev, XIK_DLS_KERNEL_CTRL_ADDR_STEP_MAX_DATA, ik_f2q(step_max));
 
     ik_wait_done(dev, &to);
     if (to) {

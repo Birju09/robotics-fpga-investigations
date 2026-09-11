@@ -18,7 +18,8 @@
 //
 int iks::dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
              const ik_real_t q_seed[IK_DOF], ik_real_t lambda, ik_real_t tol,
-             int max_iter, ik_real_t q[IK_DOF], int* iters, ik_real_t* resid) {
+             int max_iter, ik_real_t step_max, ik_real_t q[IK_DOF], int* iters,
+             ik_real_t* resid) {
 #pragma HLS INLINE off
     //! Both products per iteration (A=JJ^T and DQ=J^T u) go through the single
     //! mm::multiply() call site in the MULT loop below - see the comment
@@ -183,14 +184,52 @@ DLS_ITER:
             break;
         }
 
+        //! ---- trust region ----
+        //
+        //! Bound |dq|_inf by halving until it fits, then apply the same shift
+        //! to all six components.  Scaling rather than clipping per joint:
+        //! clipping would change the step's DIRECTION, and the direction is
+        //! the one thing the least-squares solve got right.  See the trust
+        //! region block in ik_config.hpp for the measurements, the choice of
+        //! radius, and why this is a shift and not an exact R/|dq| scale.
+        //
+        //! Written so the cost does not depend on whether the clamp fires:
+        //! the shift count is always computed and always applied (sh = 0 when
+        //! the step is already inside the radius).  A conditional step here
+        //! would make the per-iteration latency data-dependent, and the whole
+        //! value of this kernel's timing model - a constant ns/iteration, so
+        //! that latency spread is attributable entirely to iteration count -
+        //! rests on it not being.
+        int sh = 0;
+        if (step_max > (ik_real_t)0) {
+            ik_real_t mag = (ik_real_t)0;
+        DLS_STEP_MAG:
+            for (int i = 0; i < IK_DOF; i++) {
+#pragma HLS UNROLL
+                ik_real_t a = (DQ[i][0] < (ik_real_t)0)
+                                  ? (ik_real_t)(-DQ[i][0])
+                                  : DQ[i][0];
+                if (a > mag)
+                    mag = a;
+            }
+        DLS_STEP_SHIFT:
+            for (int h = 0; h < IK_DLS_STEP_HALVINGS; h++) {
+#pragma HLS UNROLL
+                if (mag > step_max) {
+                    mag = ikm::halve(mag, 1);
+                    sh++;
+                }
+            }
+        }
+
     //! Wrapping each update keeps the joint state inside the CORDIC range
     //! checked in ik_math.hpp.  FK is 2*pi-periodic so this cannot change
     //! the trajectory, only the representative angle that comes out.
     DLS_UPD:
         for (int i = 0; i < IK_DOF; i++) {
 #pragma HLS UNROLL
-            q[i] =
-                ikm::wrap_pi((ik_real_t)((ik_acc_t)q[i] + (ik_acc_t)DQ[i][0]));
+            ik_real_t dq = ikm::halve(DQ[i][0], sh);
+            q[i] = ikm::wrap_pi((ik_real_t)((ik_acc_t)q[i] + (ik_acc_t)dq));
         }
     }
 
@@ -204,13 +243,15 @@ DLS_ITER:
 //! ------------------------------------------------------------------
 extern "C" void ik_dls_kernel(const ik_word_t pose[IK_DOF],
                               const ik_word_t q_seed[IK_DOF], ik_word_t lambda,
-                              ik_word_t tol, int max_iter, ik_word_t q[IK_DOF],
-                              int* iters, ik_word_t* resid, int* status) {
+                              ik_word_t tol, int max_iter, ik_word_t step_max,
+                              ik_word_t q[IK_DOF], int* iters,
+                              ik_word_t* resid, int* status) {
 #pragma HLS INTERFACE s_axilite port = pose bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = q_seed bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = lambda bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = tol bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = max_iter bundle = CTRL
+#pragma HLS INTERFACE s_axilite port = step_max bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = q bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = iters bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = resid bundle = CTRL
@@ -236,7 +277,7 @@ DLS_INQ:
     ik_real_t qr[IK_DOF], rr;
     int it = 0;
     int st = iks::dls(Rd, pd, qs, ik_from_word(lambda), ik_from_word(tol),
-                      max_iter, qr, &it, &rr);
+                      max_iter, ik_from_word(step_max), qr, &it, &rr);
 
 DLS_OUT:
     for (int i = 0; i < IK_DOF; i++) {

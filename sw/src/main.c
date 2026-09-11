@@ -118,9 +118,9 @@ static void init_platform_stub(void);
 //! ik_vectors.h would produce a clean-looking run whose max/med is wrong by
 //! about 4x.
 //
-#if !defined(IK_VECTORS_VERSION) || IK_VECTORS_VERSION < 2
+#if !defined(IK_VECTORS_VERSION) || IK_VECTORS_VERSION < 3
 #error \
-    "sw/src/ik_vectors.h is out of date - this harness needs version 2 (ik_qdls_tbl, ik_model_iters_tbl, DLS tail poses). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
+    "sw/src/ik_vectors.h is out of date - this harness needs version 3 (ik_qdls_tbl and ik_model_iters_tbl from the trust-region solver). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
 #endif
 
 //! DLS solver arguments.  These mirror IK_DLS_*_DEFAULT in
@@ -131,6 +131,10 @@ static void init_platform_stub(void);
 #define DLS_LAMBDA 0.02f
 #define DLS_TOL 0.001f
 #define DLS_MAX_ITER 64
+//! Trust region, radians.  Set to 0 to measure the unclamped solver - the
+//! baseline every figure in ik_config.hpp's trust region block is quoted
+//! against, and what the pre-trust-region hardware runs used.
+#define DLS_STEP_MAX 1.5f
 
 #if defined(XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define MATMUL_BASE XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR
@@ -321,7 +325,7 @@ int main(void) {
 #endif
 #if HAVE_DLS
     ik_dev_t dls = {DLS_BASE};
-    samples_t s_dls_hw, s_dls_sw, s_dls_it, s_dls_sw_it;
+    samples_t s_dls_hw, s_dls_sw, s_dls_it, s_dls_sw_it, s_dls_per;
 #endif
     ik_dev_t matmul = {MATMUL_BASE};
     ik_dev_t matinv = {MATINV_BASE};
@@ -396,7 +400,8 @@ int main(void) {
             for (int j = 0; j < 6; j++)
                 seed[j] = ik_q2f(ik_seed_tbl[i][j]);
             int sd = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
-                                  DLS_MAX_ITER, q, &it, NULL, NULL);
+                                  DLS_MAX_ITER, DLS_STEP_MAX, q, &it, NULL,
+                                  NULL);
             //! Against ik_qdls_tbl, not ik_qgold_tbl.  IK is multi-valued and
             //! the two solvers land on different branches by design - see the
             //! note on the tables in ik_vectors.h.  Checked against the
@@ -445,6 +450,7 @@ int main(void) {
     samp_reset(&s_dls_sw);
     samp_reset(&s_dls_it);
     samp_reset(&s_dls_sw_it);
+    samp_reset(&s_dls_per);
     for (int i = 0; i < IK_NVEC; i++) {
         float pose[6], seed[6], q[6];
         uint32_t c;
@@ -454,15 +460,21 @@ int main(void) {
             seed[j] = ik_q2f(ik_seed_tbl[i][j]);
         }
 
-        ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER, q,
-                     &it, NULL, &c);
+        ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
+                     DLS_STEP_MAX, q, &it, NULL, &c);
         samp_add(&s_dls_hw, c);
         samp_add(&s_dls_it, (uint32_t)it);
+        //! Per-iteration cost, so the claim that the latency spread is
+        //! entirely iteration count is a measurement rather than a fit across
+        //! two separately sorted arrays.  It should be flat; if it stops being
+        //! flat, something in the iteration has become data-dependent.
+        if (it > 0)
+            samp_add(&s_dls_per, c / (uint32_t)it);
 
         int it_sw = 0;
         uint64_t t0 = ik_timer_read();
-        ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER, q,
-                        &it_sw, NULL);
+        ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
+                        DLS_STEP_MAX, q, &it_sw, NULL);
         uint64_t t1 = ik_timer_read();
         samp_add(&s_dls_sw, (uint32_t)(t1 - t0));
         //! The PS runs the same algorithm in double, so its iteration count is
@@ -507,6 +519,9 @@ int main(void) {
     samp_report("dls       (PS, double)", &s_dls_sw);
     samp_report_raw("dls       iters (PL)", &s_dls_it);
     samp_report_raw("dls       iters (PS, double)", &s_dls_sw_it);
+    samp_report("dls       per iter (PL)", &s_dls_per);
+    xil_printf("  %-26s step_max = %d milli-rad\r\n", "",
+               (int)(DLS_STEP_MAX * 1000.0f));
 #else
     xil_printf("  ik_dls               not in this bitstream (skipped)\r\n");
 #endif

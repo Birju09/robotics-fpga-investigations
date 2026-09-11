@@ -40,7 +40,8 @@ extern "C" int ik_analytic_solve_sw(const float pose[6], int cfg,
 
 extern "C" int ik_dls_solve_sw(const float pose[6], const float q_seed[6],
                                float lambda, float tol, int max_iter,
-                               float q_out[6], int* iters, float* resid) {
+                               float step_max, float q_out[6], int* iters,
+                               float* resid) {
     ik_real_t pd[3], rpy[3], Rd[3][3], qs[IK_DOF], q[IK_DOF], rr;
 
     for (int i = 0; i < 3; i++) {
@@ -54,7 +55,7 @@ extern "C" int ik_dls_solve_sw(const float pose[6], const float q_seed[6],
 
     int it = 0;
     int st = iks::dls(Rd, pd, qs, (ik_real_t)lambda, (ik_real_t)tol, max_iter,
-                      q, &it, &rr);
+                      (ik_real_t)step_max, q, &it, &rr);
 
     for (int i = 0; i < IK_DOF; i++)
         q_out[i] = (float)q[i];
