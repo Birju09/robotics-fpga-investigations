@@ -27,7 +27,7 @@ set bd_name   "ik_bd"
 set build_dir $root_dir/build/vivado
 set hls_dir   $root_dir/hls/build
 set run_bit   1
-set jobs      8
+set jobs      24
 set allow_tns 0
 
 # PL clock, MHz.  HLS schedules the kernels against clock=10 with 12.5%
@@ -107,6 +107,13 @@ proc find_ip_repos {root} {
 file mkdir $build_dir
 create_project $proj_name $build_dir -part $part -force
 set_property target_language Verilog [current_project]
+
+# -jobs on launch_runs (below) parallelises across runs/strategies; it does
+# not by itself set how many threads place_design/route_design use inside a
+# single run.  That is general.maxThreads, capped at 32 by Vivado regardless
+# of what is asked for.  Set both from the same $jobs so --jobs actually
+# uses the machine.
+set_param general.maxThreads $jobs
 
 # PYNQ-Z1/Z2 board files are optional; use them when installed so the PS gets
 # the right DDR and clock configuration, otherwise fall back to the raw part.
