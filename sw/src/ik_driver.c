@@ -19,6 +19,7 @@
 #  elif __has_include("xiltimer.h")
 #    include "xiltimer.h"
 #    define IK_HAVE_XTIME 1
+#    define IK_HAVE_XILTIMER 1
 #  endif
 #else
 #  include "xtime_l.h"
@@ -48,7 +49,16 @@
  */
 void ik_timer_init(void)
 {
-    /* XTime_GetTime starts the global timer on first use; nothing to do. */
+#if defined(IK_HAVE_XILTIMER)
+    /* Unlike the old standalone BSP's xtime_l.h, where XTime_GetTime lazily
+     * arms the global timer counter on its first call, libxiltimer's
+     * XTime_GetTime is a thin wrapper over a driver instance that must be
+     * brought up first.  Skipping this leaves the counter it reads never
+     * started, so every XTime_GetTime call returns the same value and every
+     * measured delta in this harness comes out as exactly zero - which is
+     * what happens without this call. */
+    XTimer_Init();
+#endif
 }
 
 uint64_t ik_timer_read(void)
