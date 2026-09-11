@@ -9,8 +9,13 @@ void mm::multiply(const ik_real_t A[IK_MAT_MAX][IK_MAT_MAX],
 MM_ROW:
     for (int i = 0; i < IK_MAT_MAX; i++) {
 MM_COL:
+        /* II=3, not 1.  MM_DOT below is fully unrolled, so the II of this
+         * loop is what decides whether its six products become six
+         * multipliers or two shared across three cycles.  At II=1 each of
+         * the three mm::multiply() sites in ik_dls cost ~24 DSP slices.
+         * See the resource/latency note in ik_config.hpp. */
         for (int j = 0; j < IK_MAT_MAX; j++) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE II=3
             /* Q32.32 accumulator: the product of two Q16.16 values is exactly
              * Q32.32, and six of them sum without rounding.  One rounding step
              * happens on the store below, which is what makes this bit-

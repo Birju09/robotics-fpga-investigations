@@ -71,6 +71,57 @@ static const double IK_DH_SA[IK_DOF] = { 1.0,   0.0,   1.0,  -1.0,   1.0,   0.0 
 #define IK_DLS_TOL_DEFAULT    0.001
 #define IK_DLS_MAX_ITER       64
 
+/* ---------------- PL resource / latency trade ---------------- */
+/*
+ * ik_dls_kernel synthesised to roughly 126% of the xc7z020's 220 DSP48E1
+ * slices, so it could not be built at all - let alone alongside
+ * ik_analytic_kernel, which is the bitstream the PL-vs-PL comparison
+ * actually needs.
+ *
+ * The cause is the schedule, not the algorithm.  Every loop that multiplies
+ * was either fully unrolled or pipelined at II=1, and both of those oblige
+ * Vitis HLS to instantiate one multiplier per concurrent product.  An
+ * ap_fixed<32,16> product does not fit DSP48E1's 25x18 multiplier, so each
+ * one is decomposed across several slices and the count climbs fast:
+ *
+ *   matinv  MI_NORM   12 products, fully unrolled
+ *   matinv  MI_ELIM   12 products at II=1
+ *   matmul  MM_DOT     6 products at II=1, x3 call sites
+ *   kinem.  JC_COLS    6 products at II=1
+ *   ik_dls  DLS_NORM   6 products, fully unrolled
+ *
+ * Raising II lets HLS share multipliers across cycles instead of
+ * instantiating them side by side: II=3 over six products asks for two
+ * multipliers rather than six.  The trade is close to linear in both
+ * directions.
+ *
+ * Crucially it costs nothing in determinism.  Every loop listed above has a
+ * fixed trip count, so a higher II lengthens every solve by the same number
+ * of cycles.  The jitter this project exists to measure comes from
+ * DLS_ITER's data-dependent exit, which none of this touches.  Clock rate is
+ * likewise irrelevant to it: the jitter is in cycle count, and max/med is a
+ * ratio that survives any uniform rescaling.
+ *
+ * The II values are written as literals at each site rather than as macros
+ * here, because #pragma lines are not macro-expanded by the C preprocessor
+ * and a knob that silently failed to apply would be worse than no knob.
+ * Tune them against 'make -C hls reports' - how many slices a product costs,
+ * and how aggressively HLS shares them, both move between releases.  Lower
+ * II means more hardware; raise until the DSP total fits, then check what it
+ * cost in latency.
+ *
+ * Sites, current values:
+ *   hls/src/matinv.cpp     MI_NORM  rolled (II=1, 1 multiplier)
+ *   hls/src/matinv.cpp     MI_ELIM  II=6   (12 products -> 2 multipliers)
+ *   hls/src/matmul.cpp     MM_COL   II=3   ( 6 products -> 2 multipliers)
+ *   hls/src/kinematics.cpp JC_COLS  II=3   ( 6 products -> 2 multipliers)
+ *   hls/src/ik_dls.cpp     DLS_NORM rolled (II=1, 1 multiplier)
+ *
+ * Note that matmul.cpp and matinv.cpp are shared with the standalone
+ * mat_mul_kernel / mat_inv_kernel IPs, so changing them changes what those
+ * IPs characterise.  Report the II alongside any latency figure from them.
+ */
+
 /* ---------------- analytic branch selection bits ---------------- */
 #define IK_CFG_SHOULDER 0x1     /* 1 = theta1 = atan2(pc_y, pc_x), 0 = +pi   */
 #define IK_CFG_ELBOW    0x2     /* 1 = sin(gamma) > 0                        */

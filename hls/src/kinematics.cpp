@@ -195,8 +195,12 @@ JC_COPY:
 
     /* Jv_i = z_i x (p_e - o_i),  Jw_i = z_i */
 JC_COLS:
+    /* II=3, not 1.  Six cross-product multiplies per column at II=1 are six
+     * multipliers; at II=3 they are two, shared.  fk_jacobian() is called
+     * only from ik_dls, so this does not affect ik_analytic_kernel.  See the
+     * resource/latency note in ik_config.hpp. */
     for (int i = 0; i < IK_DOF; i++) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE II=3
         ik_real_t dx = (ik_real_t)((ik_acc_t)p[0] - (ik_acc_t)org[i][0]);
         ik_real_t dy = (ik_real_t)((ik_acc_t)p[1] - (ik_acc_t)org[i][1]);
         ik_real_t dz = (ik_real_t)((ik_acc_t)p[2] - (ik_acc_t)org[i][2]);

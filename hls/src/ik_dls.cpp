@@ -22,13 +22,9 @@ int iks::dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
              ik_real_t q[IK_DOF], int *iters, ik_real_t *resid)
 {
 #pragma HLS INLINE off
-    /* mm::multiply() is called three times below (A=JJ^T, U, DQ). Straight-
-     * line calls to a non-inlined function are not automatically shared by
-     * Vitis HLS the way calls inside a loop are - #pragma HLS ALLOCATION
-     * instances=... limit=1 does not enforce this in this release either
-     * (tried, verified no effect on the synthesised instance count). U and
-     * DQ's calls are routed through a shared loop below instead; A=JJ^T
-     * can't join them because mi::invert() must run in between. */
+    /* All three products per iteration (A=JJ^T, U, DQ) go through the single
+     * mm::multiply() call site in the MULT loop below - see the comment
+     * there for why, and ik_config.hpp for the DSP budget this is part of. */
 
 DLS_SEED:
     for (int i = 0; i < IK_DOF; i++) {
@@ -67,8 +63,12 @@ DLS_ITER:
 
         err_sq = (ik_acc_t)0;
 DLS_NORM:
+        /* Rolled, not unrolled: six concurrent squares cost six multipliers
+         * for a six-term reduction that is nowhere near the critical path.
+         * II=1 over six cycles costs one.  The loop-carried dependency is a
+         * 64-bit add, which closes comfortably at this clock. */
         for (int i = 0; i < IK_DOF; i++) {
-#pragma HLS UNROLL
+#pragma HLS PIPELINE II=1
             err_sq += (ik_acc_t)(e[i] * e[i]);
         }
         if (err_sq < tol_sq) {
@@ -76,25 +76,8 @@ DLS_NORM:
             break;
         }
 
-        /* A = J J^T + lambda^2 I  (symmetric positive definite by
-         * construction, which is what keeps the inversion well conditioned
-         * even at a singularity - that is the whole point of the damping). */
-        ik_real_t A[IK_MAT_MAX][IK_MAT_MAX];
-        mm::multiply(J, J, IK_DOF, IK_DOF, IK_DOF, false, true, A);
-DLS_DAMP:
-        for (int i = 0; i < IK_DOF; i++) {
-#pragma HLS UNROLL
-            A[i][i] = (ik_real_t)((ik_acc_t)A[i][i] + lam_sq);
-        }
-
-        ik_real_t Ainv[IK_MAT_MAX][IK_MAT_MAX];
-        if (mi::invert(A, IK_DOF, Ainv) != IK_OK) {
-            st = IK_ERR_SINGULAR;
-            break;
-        }
-
-        /* u = Ainv e, then dq = J^T u.  Solving for u first keeps both
-         * products at 6x6-by-6x1 instead of forming the 6x6 pseudo-inverse. */
+        /* e as a 6x1 column, padded.  Hoisted above the multiply loop
+         * because that loop's s=1 stage consumes it. */
         ik_real_t E[IK_MAT_MAX][IK_MAT_MAX];
 DLS_EVEC:
         for (int i = 0; i < IK_MAT_MAX; i++) {
@@ -105,46 +88,101 @@ DLS_EVEC:
             }
         }
 
+        /* Three products per iteration:
+         *
+         *   s=0   A  = J J^T     then + lambda^2 I, then inverted to Ainv
+         *   s=1   U  = Ainv E
+         *   s=2   DQ = J^T U
+         *
+         * A is symmetric positive definite by construction, which is what
+         * keeps the inversion well conditioned even at a singularity - that
+         * is the whole point of the damping.  Solving for U first keeps s=1
+         * and s=2 at 6x6-by-6x1 instead of forming the 6x6 pseudo-inverse.
+         *
+         * All three go through the one mm::multiply() call site below.
+         * Straight-line calls to a non-inlined function are not shared by
+         * Vitis HLS the way calls inside a loop are, and #pragma HLS
+         * ALLOCATION instances=... limit=1 does not enforce it in this
+         * release either (tried, verified no effect on the synthesised
+         * instance count) - so three call sites meant three separate
+         * multiplier banks.  s=1 and s=2 were already routed through a
+         * shared loop; s=0 could not join while mi::invert() sat between
+         * them as straight-line code.  Hanging the inversion off the s==0
+         * branch of the same loop puts it back in sequence at one instance,
+         * the same pattern that already shares dh_step() across
+         * fk()/rot03()/fk_jacobian().
+         *
+         * Vitis HLS does not support arrays of pointers ("pointer to
+         * pointer") for synthesis, so the operands are muxed by value into
+         * fixed staging buffers rather than selected by an array of
+         * pointers. */
+        ik_real_t Ainv[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t U[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t DQ[IK_MAT_MAX][IK_MAT_MAX];
-
-        /* U = Ainv*E, then DQ = J^T*U: two sequential calls to
-         * mm::multiply() that were synthesising as two separate 24-DSP
-         * instances (three, counting A=JJ^T above) instead of sharing one -
-         * an ALLOCATION limit on mm::multiply did not take effect in this
-         * Vitis release. Route both through a single call site inside a
-         * loop instead, the same pattern that already shares dh_step()
-         * across fk()/rot03()/fk_jacobian(). Vitis HLS does not support
-         * arrays of pointers ("pointer to pointer") for synthesis, so the
-         * operands are muxed by value into fixed staging buffers rather
-         * than selected by an array of pointers. */
         ik_real_t stageA[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t stageB[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t stageC[IK_MAT_MAX][IK_MAT_MAX];
-        const bool mulTa[2] = { false, true };
-UDQ:
-        for (int s = 0; s < 2; s++) {
+
+        const bool mulTa[3] = { false,  false, true };
+        const bool mulTb[3] = { true,   false, false };
+        const int  mulN[3]  = { IK_DOF, 1,     1 };
+
+        bool singular = false;
+MULT:
+        for (int s = 0; s < 3; s++) {
 #pragma HLS PIPELINE off
-UDQ_IN:
+MULT_IN:
             for (int r = 0; r < IK_MAT_MAX; r++) {
 #pragma HLS UNROLL
                 for (int c = 0; c < IK_MAT_MAX; c++) {
 #pragma HLS UNROLL
-                    stageA[r][c] = (s == 0) ? Ainv[r][c] : J[r][c];
-                    stageB[r][c] = (s == 0) ? E[r][c]    : U[r][c];
+                    stageA[r][c] = (s == 1) ? Ainv[r][c] : J[r][c];
+                    stageB[r][c] = (s == 0) ? J[r][c]
+                                 : (s == 1) ? E[r][c]
+                                            : U[r][c];
                 }
             }
-            mm::multiply(stageA, stageB, IK_DOF, IK_DOF, 1,
-                        mulTa[s], false, stageC);
-UDQ_OUT:
-            for (int r = 0; r < IK_MAT_MAX; r++) {
+
+            mm::multiply(stageA, stageB, IK_DOF, IK_DOF, mulN[s],
+                         mulTa[s], mulTb[s], stageC);
+
+            if (s == 0) {
+                ik_real_t A[IK_MAT_MAX][IK_MAT_MAX];
+DLS_DAMP:
+                for (int r = 0; r < IK_MAT_MAX; r++) {
 #pragma HLS UNROLL
-                for (int c = 0; c < IK_MAT_MAX; c++) {
+                    for (int c = 0; c < IK_MAT_MAX; c++) {
 #pragma HLS UNROLL
-                    if (s == 0) U[r][c]  = stageC[r][c];
-                    else        DQ[r][c] = stageC[r][c];
+                        A[r][c] = (r == c && r < IK_DOF)
+                                ? (ik_real_t)((ik_acc_t)stageC[r][c] + lam_sq)
+                                : stageC[r][c];
+                    }
+                }
+                /* Flagged rather than broken out of, matching mi::invert()'s
+                 * own choice not to bail early: s=1 and s=2 then compute
+                 * values that DLS_ITER discards on the way out.  Breaking
+                 * here would save two multiplies on an error path that ends
+                 * the solve anyway, at the cost of a third data-dependent
+                 * exit in a kernel whose latency story is already the thing
+                 * under measurement. */
+                if (mi::invert(A, IK_DOF, Ainv) != IK_OK)
+                    singular = true;
+            } else {
+MULT_OUT:
+                for (int r = 0; r < IK_MAT_MAX; r++) {
+#pragma HLS UNROLL
+                    for (int c = 0; c < IK_MAT_MAX; c++) {
+#pragma HLS UNROLL
+                        if (s == 1) U[r][c]  = stageC[r][c];
+                        else        DQ[r][c] = stageC[r][c];
+                    }
                 }
             }
+        }
+
+        if (singular) {
+            st = IK_ERR_SINGULAR;
+            break;
         }
 
         /* Wrapping each update keeps the joint state inside the CORDIC range

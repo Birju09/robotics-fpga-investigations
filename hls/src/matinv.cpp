@@ -71,15 +71,26 @@ MI_SWAP:
         /* ---- normalise the pivot row ---- */
         ik_real_t inv_p = (ik_real_t)1 / M[col][col];
 MI_NORM:
+        /* Rolled, not unrolled.  Twelve concurrent products cost twelve
+         * multipliers; at II=1 over twelve cycles this costs one, and the
+         * twelve cycles are cheap against the elimination below.  j is now a
+         * variable index into the dim=2 partition, which resolves to a mux
+         * rather than a port conflict because only one column is touched per
+         * cycle.  See the resource/latency note in ik_config.hpp. */
         for (int j = 0; j < AUG; j++) {
-#pragma HLS UNROLL
+#pragma HLS PIPELINE II=1
             M[col][j] = (ik_real_t)((ik_acc_t)(M[col][j] * inv_p));
         }
 
         /* ---- eliminate the column from every other row ---- */
 MI_ELIM:
+        /* II=6, not 1.  The inner j loop is fully unrolled across AUG=12
+         * columns, so this loop's II decides whether that costs twelve
+         * multipliers or two shared across six cycles.  This was the single
+         * largest DSP consumer in ik_dls_kernel.  Latency goes from six
+         * cycles per column to thirty-six, constant either way. */
         for (int i = 0; i < IK_MAT_MAX; i++) {
-#pragma HLS PIPELINE II=1
+#pragma HLS PIPELINE II=6
             if (i != col) {
                 ik_real_t f = M[i][col];
                 for (int j = 0; j < AUG; j++) {
