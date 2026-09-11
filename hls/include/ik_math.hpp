@@ -160,6 +160,11 @@ RECIP_MSB:
     }
 
     uint32_t m = d << (31 - e);                 /* Q0.32, bit 31 set    */
+    /* 128 x 32 bits is 4 Kb - a rounding error against the 280 BRAM18 on
+     * this part, and LUTs are what it is short of.  HLS maps a ROM this
+     * small to distributed RAM by default, which is the wrong currency
+     * here. */
+#pragma HLS BIND_STORAGE variable=RECIP_SEED type=rom_1p impl=bram
     uint64_t r = RECIP_SEED[(m >> 24) & 0x7F];  /* Q2.30, 1/u           */
 
 RECIP_NR:

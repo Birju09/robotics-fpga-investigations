@@ -194,11 +194,17 @@ JC_I:
 
     /* Joint i rotates about z_{i-1}, anchored at o_{i-1}: capture the frame
      * BEFORE applying step i. */
+#if IK_BATCH_CORDIC
     /* All six CORDIC evaluations up front, pipelined.  They depend only on
      * q, not on the chain, so leaving them inside JC_CHAIN put six serial
-     * CORDIC latencies on a critical path that had no need of them. */
+     * CORDIC latencies on a critical path that had no need of them.
+     *
+     * Off by default: it is the most expensive of the recent optimisations
+     * in LUTs and the cheapest in cycles, and this kernel overflowed the
+     * part by 293 LUTs with it on.  See ik_config.hpp. */
     ik_real_t sq[IK_DOF], cq[IK_DOF];
     ikm::sincos_batch(q, sq, cq);
+#endif
 
 JC_CHAIN:
     for (int i = 0; i < IK_DOF; i++) {   /* PIPELINE off - see fk()'s FK_CHAIN */
@@ -209,7 +215,11 @@ JC_CHAIN:
         org[i][0] = pc[0];
         org[i][1] = pc[1];
         org[i][2] = pc[2];
+#if IK_BATCH_CORDIC
         dh_step_sc(i, sq[i], cq[i], Rc, pc);
+#else
+        dh_step(i, q[i], Rc, pc);
+#endif
     }
 
 JC_COPY:

@@ -146,6 +146,28 @@ static const double IK_DH_SA[IK_DOF] = { 1.0,   0.0,   1.0,  -1.0,   1.0,   0.0 
  * hls/tb/tb_spd.cpp for the check that the two agree. */
 #define IK_FAST_RECIP 1
 
+/*
+ * Pipelined CORDIC batch in fk_jacobian.  OFF by default, which is a
+ * measurement and not a preference.
+ *
+ * With all four of the latest optimisations on, ik_dls_kernel synthesised to
+ * 53,493 LUT against the 53,200 this part has - over by 293, so it does not
+ * place at all.  Of the four, this one costs by far the most area for the
+ * least time: ikm::sincos_batch()'s PIPELINE II=1 fully unrolls the 24-stage
+ * 40-bit CORDIC datapath, several thousand LUTs, to save ~114 cycles of a
+ * ~1,050-cycle iteration - under 8%, and less than a third of what the
+ * Newton-Raphson reciprocal buys for a fraction of the area.
+ *
+ * So it is the first thing to drop when LUTs are short, and the first thing
+ * to try again on a larger part.  On Versal, where LUTs are not the
+ * constraint, turn it on.
+ *
+ * Turning this on also turns on ikm::sincos_batch()'s unrolled engine, which
+ * is shared with nothing - fk() and rot03() keep the rolled sincos() so
+ * ik_analytic is unaffected either way.
+ */
+#define IK_BATCH_CORDIC 0
+
 /* ---------------- analytic branch selection bits ---------------- */
 #define IK_CFG_SHOULDER 0x1     /* 1 = theta1 = atan2(pc_y, pc_x), 0 = +pi   */
 #define IK_CFG_ELBOW    0x2     /* 1 = sin(gamma) > 0                        */
