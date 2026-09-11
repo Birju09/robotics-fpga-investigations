@@ -1,6 +1,7 @@
 #include "tb_common.hpp"
 #include "spd.hpp"
 #include "matinv.hpp"
+#include "ik_math.hpp"
 
 /*
  * spd::solve() has no golden vectors of its own, and deliberately so.
@@ -187,6 +188,33 @@ int main()
             flagged++;
     }
 
+    /*
+     * ikm::recip_q16_raw() gets its own check, and needs one.
+     *
+     * spd::solve() calls it only in the fixed-point build; this build runs in
+     * double and takes the exact-division path, so nothing above would notice
+     * if the Newton-Raphson were wrong.  It is integer-only and identical in
+     * both builds precisely so it can be tested here - a silently wrong
+     * reciprocal would corrupt every DLS solve, and there is no other
+     * opportunity to catch that before hardware.
+     *
+     * Swept across the whole supported input range: from just above the
+     * IK_PIVOT_EPS floor (raw 7) to 20.0, which is well past any pivot
+     * J J^T + lambda^2 I can produce for this arm.
+     */
+    long recip_n = 0, recip_bad = 0;
+    double recip_worst = 0.0;
+    for (long d = 7; d <= 20L * 65536L; d++) {
+        double exact = 65536.0 * 65536.0 / (double)d;      /* raw 1/d */
+        if (exact > 2147483647.0) continue;
+        double got = (double)ikm::recip_q16_raw((int32_t)d);
+        double err = got - exact;
+        if (err < 0) err = -err;
+        recip_n++;
+        if (err > recip_worst) recip_worst = err;
+        if (err > 1.0) recip_bad++;                        /* > 1 raw LSB */
+    }
+
     std::printf("[tb_spd]\n");
     int rc = 0;
     rc |= res_st.report(TOL_RES);
@@ -195,6 +223,13 @@ int main()
                 "spd::solve (underdamped)", flagged, singular_cases,
                 flagged == singular_cases ? "pass" : "FAIL");
     if (flagged != singular_cases) rc = 1;
+    std::printf("  %-28s %ld values, worst=%.2f raw LSB  %s\n",
+                "ikm::recip_q16_raw", recip_n, recip_worst,
+                recip_bad ? "FAIL" : "pass");
+    if (recip_bad) {
+        std::printf("      %ld results off by more than 1 LSB\n", recip_bad);
+        rc = 1;
+    }
     std::printf("  %d systems, n=2..6, 3 damping factors, 3 scalings\n", cases);
     return rc;
 }

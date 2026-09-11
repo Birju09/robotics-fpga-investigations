@@ -32,13 +32,13 @@ MM_ROW:
     for (int i = 0; i < mr; i++) {
 #pragma HLS LOOP_TRIPCOUNT min=1 max=6
 MM_COL:
-        /* II=3, not 1.  MM_DOT below is fully unrolled, so the II of this
-         * loop is what decides whether its six products become six
-         * multipliers or two shared across three cycles.  At II=1 each
-         * mm::multiply() site in ik_dls cost ~24 DSP slices.
-         * See the resource/latency note in ik_config.hpp. */
+        /* MM_DOT below is fully unrolled, so the II of this loop is what
+         * decides whether its six products become six multipliers or three
+         * shared across two cycles.  II=3 while the budget was 126% of the
+         * DSPs; at 82% there is room to buy a third multiplier back and a
+         * third of the cycles with it.  See ik_config.hpp. */
         for (int j = 0; j < nc; j++) {
-#pragma HLS PIPELINE II=3
+#pragma HLS PIPELINE II=2
 #pragma HLS LOOP_TRIPCOUNT min=1 max=6
             /* Q32.32 accumulator: the product of two Q16.16 values is exactly
              * Q32.32, and six of them sum without rounding.  One rounding step

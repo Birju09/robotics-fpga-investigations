@@ -111,8 +111,9 @@ static const double IK_DH_SA[IK_DOF] = { 1.0,   0.0,   1.0,  -1.0,   1.0,   0.0 
  * cost in latency.
  *
  * Sites, current values:
- *   hls/src/matmul.cpp     MM_COL   II=3   ( 6 products -> 2 multipliers)
+ *   hls/src/matmul.cpp     MM_COL   II=2   ( 6 products -> 3 multipliers)
  *   hls/src/kinematics.cpp JC_COLS  II=3   ( 6 products -> 2 multipliers)
+ *   hls/src/kinematics.cpp DH_P/R   II=1   ( 3 multipliers, shared)
  *   hls/src/ik_dls.cpp     DLS_NORM rolled (II=1, 1 multiplier)
  *   hls/src/spd.cpp        all reductions rolled at II=1
  *   hls/src/matinv.cpp     MI_NORM  rolled (II=1, 1 multiplier)
@@ -124,11 +125,26 @@ static const double IK_DH_SA[IK_DOF] = { 1.0,   0.0,   1.0,  -1.0,   1.0,   0.0 
  * either changes what those IPs characterise, so report the II alongside any
  * latency figure from them.
  *
- * Once this fits with margin, the next term to attack is not a multiplier at
- * all: spd::solve() spends roughly six reciprocals per call at ~35 cycles
- * each, which is most of its latency.  A Newton-Raphson reciprocal seeded
- * from a small table would trade LUTs for a large share of that.
+ * Two things that are not multiplier count at all, both now done:
+ *
+ *   ikm::sincos_batch()  hoists fk_jacobian's six CORDIC evaluations out of
+ *                        the DH chain and pipelines them.  They never
+ *                        depended on the chain; six serial CORDIC latencies
+ *                        were sitting on the critical path for no reason.
+ *
+ *   ikm::recip()         replaces six ~35-cycle sequential divides per
+ *                        spd::solve() with a table-seeded Newton-Raphson.
+ *
+ * IK_FAST_RECIP below switches the second one off.  It is on by default, but
+ * it is the one change in this file's history that the host regression
+ * cannot validate - that build runs in double and never touches the
+ * fixed-point path - so keep the switch until csim has confirmed it.
  */
+
+/* Table-seeded Newton-Raphson reciprocal in spd::solve().  Undefine to fall
+ * back on the ap_fixed divider; see ikm::recip() in ik_math.hpp, and
+ * hls/tb/tb_spd.cpp for the check that the two agree. */
+#define IK_FAST_RECIP 1
 
 /* ---------------- analytic branch selection bits ---------------- */
 #define IK_CFG_SHOULDER 0x1     /* 1 = theta1 = atan2(pc_y, pc_x), 0 = +pi   */

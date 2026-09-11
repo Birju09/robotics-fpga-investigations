@@ -23,12 +23,14 @@
  * is absent, and every section is guarded on its own HAVE_* flag, so the same
  * source covers an analytic-only build, a DLS-only build, or both.
  *
- * That matters because they do not currently fit together.  ik_dls_kernel is
- * 186 DSP / 51k LUT after the II changes in hls/include/ik_config.hpp, and
- * ik_analytic_kernel is another 165 DSP / 46k LUT - either one alone leaves
- * the xc7z020 nearly full.  scripts/build_vivado.tcl therefore builds one at
- * a time; run it twice and compare at the same clock, rather than reading
- * across two bitstreams built at different ones.
+ * That matters because they do not fit together.  ik_dls_kernel measured 180
+ * DSP / 41k LUT closing at 80 MHz, and ik_analytic_kernel is another 165 DSP
+ * / 46k LUT - either one alone leaves the xc7z020 nearly full.
+ * scripts/build_vivado.tcl therefore builds one at a time; run it twice and
+ * compare at the same clock, rather than reading across two bitstreams built
+ * at different ones.  That is not a formality: an earlier round compared
+ * analytic at 80 MHz against DLS at 40 and half the apparent gap was the
+ * clock.
  */
 
 #include <stdio.h>
@@ -362,6 +364,13 @@ int main(void)
             int sd = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
                                   DLS_MAX_ITER, q, &it, NULL, NULL);
             print_pose_result(i, ik_tag_tbl[i], sd, q, qg, it);
+            /* The double-precision model's count for the same pose.  A
+             * systematic gap means quantisation moved the convergence path,
+             * which is a result rather than a failure - so report it, do not
+             * assert on it. */
+            if (it != (int)ik_model_iters_tbl[i])
+                xil_printf("         (model needed %d)\r\n",
+                           (int)ik_model_iters_tbl[i]);
         }
 #endif
     }

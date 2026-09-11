@@ -149,16 +149,18 @@ def gen_c_header(n=48, path=None):
 
     recs = []
 
-    # Two thirds ordinary poses.
-    while len(recs) < (2 * n) // 3:
+    # Half ordinary poses.
+    while len(recs) < n // 2:
         q = q_arr(rng.uniform(QLIM[:, 0], QLIM[:, 1], size=6))
         T = M.fk(q)
         if M.elbow_conditioning(T, +1) < 0.25:
             continue
         recs.append(_mk_rec(q, T, "well-conditioned"))
 
-    # One third stressed: wrist near singularity, or elbow near full extension.
-    while len(recs) < n:
+    # A quarter stressed GEOMETRICALLY: wrist near singularity, or elbow near
+    # full extension.  These stress the analytic solver, whose branch
+    # selection degenerates there.
+    while len(recs) < (3 * n) // 4:
         q = q_arr(rng.uniform(QLIM[:, 0], QLIM[:, 1], size=6))
         if len(recs) % 2 == 0:
             q[4] = rng.choice([1e-3, -1e-3, 2e-3])        # wrist singularity
@@ -177,6 +179,26 @@ def gen_c_header(n=48, path=None):
             continue
         recs.append(_mk_rec(q, T, tag))
 
+    # A quarter selected on DLS ITERATION COUNT, which is a different thing
+    # entirely and is the reason this block exists.
+    #
+    # The geometric stress above is a proxy for the analytic solver's
+    # difficulty, not the iterative one's.  DLS does not care that a branch
+    # has degenerated; it cares how far the seed is from the solution and how
+    # flat the Jacobian stays along the way, and those are not the same poses.
+    # Combined with _mk_rec()'s +-0.25 rad seed - a warm start, near the
+    # answer by construction - every pose in the old table converged in three
+    # to five iterations.  Measured on hardware the table topped out at 7,
+    # giving max/med = 1.77, while the 256-pose host sweep in gen_ik_dls()
+    # reaches 25.  The table was not sampling the tail that decides whether
+    # the solver can be scheduled at all.
+    #
+    # So select on the quantity being measured: run the model's DLS and keep
+    # poses by their actual iteration count, spread across the tail rather
+    # than clustered at the worst case.
+    for _iters, q, T, seed in _find_dls_tail(n - len(recs)):
+        recs.append(_mk_rec(q, T, "dls-tail", seed=seed))
+
     def c_rows(key):
         return "\n".join(
             "    { %s }," % ", ".join("%11d" % fx(v) for v in r[key])
@@ -190,9 +212,21 @@ def gen_c_header(n=48, path=None):
  * Pose set for the bare-metal timing harness.  All values are signed Q16.16,
  * the format the kernels' AXI4-Lite registers expect.
  *
- * The set intentionally mixes well-conditioned poses with wrist-singular and
- * near-full-extension ones, because the DLS iteration count - and therefore
- * its latency - is governed by the hard cases, not the typical ones.
+ * The set mixes three groups, in halves and quarters:
+ *
+ *   well-conditioned              ordinary poses, comfortable for both solvers
+ *   wrist-singular/elbow-extended geometric stress, which is what degrades the
+ *                                 ANALYTIC solver's branch selection
+ *   dls-tail                      selected on the model's DLS iteration count,
+ *                                 which is a different property entirely
+ *
+ * The last group exists because the first two do not produce one.  DLS does
+ * not care that a branch has degenerated; it cares how far the seed is and
+ * how flat the Jacobian stays, so a table stressed only geometrically - and
+ * seeded within 0.25 rad of the answer - converges in three to five
+ * iterations every time.  Measured on hardware that gave max/med = 1.77,
+ * against 25 iterations in the 256-pose host sweep.  The tail that decides
+ * whether an iterative solver can be scheduled at all was not being sampled.
  */
 #ifndef IK_VECTORS_H
 #define IK_VECTORS_H
@@ -225,27 +259,94 @@ static const char *const ik_tag_tbl[IK_NVEC] = {
 %s
 };
 
+/* Iterations the double-precision model needs for each pose at the same
+ * lambda and tol the harness passes.  The Q16.16 kernel should track this
+ * closely; a systematic disagreement means quantisation moved the
+ * convergence path, which is a finding rather than a test failure. */
+static const uint8_t ik_model_iters_tbl[IK_NVEC] = {
+%s
+};
+
 #endif /* IK_VECTORS_H */
 """ % (len(recs),
             c_rows("pose"),
             c_rows("seed"),
             c_rows("qgold"),
             "    " + ", ".join("%d" % r["cfg"] for r in recs),
-            "\n".join('    "%s",' % r["tag"] for r in recs)))
+            "\n".join('    "%s",' % r["tag"] for r in recs),
+            "    " + ", ".join("%d" % r["iters"] for r in recs)))
 
     print(f"  {'ik_vectors.h':20s} {len(recs):5d} poses   -> {os.path.relpath(path)}")
 
 
-def _mk_rec(q, T, tag):
-    pose = q_arr(M.T_to_pose(T))
+def _pose_to_T(pose):
     Tq = np.eye(4)
     Tq[:3, :3] = M.rpy_to_rot(*pose[3:])
     Tq[:3, 3] = pose[:3]
+    return Tq
+
+
+def _find_dls_tail(count, floor=8, ceiling=MAX_ITER // 2,
+                   pool_target=30, tries_max=60000):
+    """
+    Poses whose DLS iteration count actually lands in the tail.
+
+    Seeds are drawn far (+-1.2 rad) rather than at _mk_rec()'s +-0.25: the
+    seed distance is the dominant term in how many iterations DLS needs, so a
+    tight perturbation cannot produce a tail no matter which pose it is
+    applied to.
+
+    Returns a spread across the tail, not `count` copies of the worst case.
+    A table of only extreme poses would overstate the median as badly as the
+    old one understated the maximum; what the real-time argument needs is the
+    whole distribution, max included.
+    """
+    pool = []
+    tries = 0
+    while tries < tries_max and len(pool) < pool_target * count:
+        tries += 1
+        q = q_arr(rng.uniform(QLIM[:, 0], QLIM[:, 1], size=6))
+        T = M.fk(q)
+        pose = q_arr(M.T_to_pose(T))
+        Tq = _pose_to_T(pose)
+        if not M.ik_analytic(Tq)[1]:
+            continue
+        seed = q_arr(q + rng.uniform(-1.2, 1.2, size=6))
+        _, iters, _, conv = M.ik_dls(Tq, seed, lam=LAMBDA,
+                                     max_iter=MAX_ITER, tol=TOL)
+        # Converged, and with margin below the cap.  A pose that reaches
+        # MAX_ITER returns IK_ERR_NO_CONV and would make the correctness
+        # column meaningless; one that lands exactly ON it is worse, because
+        # the model checks its residual once more after the loop and the
+        # kernel does not, so the two disagree about whether it converged at
+        # all.  Non-convergence is a real phenomenon and worth its own
+        # experiment - it is just not this one.
+        if conv and floor <= iters <= ceiling:
+            pool.append((iters, q, T, seed))
+
+    if len(pool) <= count:
+        return pool
+
+    pool.sort(key=lambda r: r[0])
+    # Evenly spaced through the sorted pool, so the slowest pose found is
+    # always the last one taken.
+    idx = sorted({round(i * (len(pool) - 1) / (count - 1))
+                  for i in range(count)})
+    return [pool[i] for i in idx]
+
+
+def _mk_rec(q, T, tag, seed=None):
+    pose = q_arr(M.T_to_pose(T))
+    Tq = _pose_to_T(pose)
     qs, ok = M.ik_analytic(Tq, +1, +1, +1)
     if not ok:
         qs = q
-    seed = q_arr(q + rng.uniform(-0.25, 0.25, size=6))
-    return {"pose": pose, "seed": seed, "qgold": qs,
+    if seed is None:
+        seed = q_arr(q + rng.uniform(-0.25, 0.25, size=6))
+    # Carried into the header so the harness can report what the
+    # double-precision model needed alongside what the kernel actually took.
+    _, iters, _, _ = M.ik_dls(Tq, seed, lam=LAMBDA, max_iter=MAX_ITER, tol=TOL)
+    return {"pose": pose, "seed": seed, "qgold": qs, "iters": int(iters),
             "cfg": 1 | 2 | 4, "tag": tag}
 
 

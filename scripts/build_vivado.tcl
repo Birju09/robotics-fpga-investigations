@@ -45,16 +45,22 @@ set clk_mhz   80
 
 # Which kernels go in the bitstream.
 #
-# The xc7z020 has 220 DSP48E1 and 53,200 LUT, and both are now binding.
-# ik_dls_kernel used to need ~126% of the DSPs and could not be built at all;
-# raising II at the five multiply sites listed in hls/include/ik_config.hpp
-# brought it to 186 DSP (85%) and 51k LUT (96%).  It fits - on its own.
+# The xc7z020 has 220 DSP48E1 and 53,200 LUT.  ik_dls_kernel used to need
+# ~126% of the DSPs and could not be built at all; raising II at the multiply
+# sites listed in hls/include/ik_config.hpp, then replacing the Gauss-Jordan
+# inverse with spd::solve()'s LDL^T, brought it to 180 DSP (82%) and 41k LUT
+# (77%) closing at 80 MHz.  It fits - on its own.
 #
 # It does NOT fit alongside ik_analytic_kernel, which is 75% DSP and 86% LUT
-# by itself, so the single-bitstream head-to-head is still out of reach on
-# this part.  Build them separately and compare at the same clock.  Note the
-# LUT figure: at 96% occupancy expect placement to be slow and timing to be
-# tight, and be ready to drop --clk below 80 if the gate below trips.
+# by itself, so the single-bitstream head-to-head is out of reach on this
+# part.  Build them separately and compare at the SAME clock: an earlier
+# round read analytic at 80 MHz against DLS at 40 and half the apparent gap
+# was the clock, not the algorithm.
+#
+# The latest round (batched CORDIC, pipelined DH products, Newton-Raphson
+# reciprocal, MM_COL II=2) spends some of that headroom back - expect roughly
+# +15 DSP and +5k LUT.  If DSP overflows, raise DH_R's II or return MM_COL to
+# 3; both knobs are documented in ik_config.hpp.
 #
 # Pass --kernels to build any other combination, e.g.
 #   --kernels ik_analytic_kernel

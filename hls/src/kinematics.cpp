@@ -11,12 +11,19 @@
 /* cos/sin of alpha_i are tabulated (they are exactly 0 or +-1), so    */
 /* only one CORDIC call is needed per joint rather than two.           */
 /* ------------------------------------------------------------------ */
-static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3])
+/*
+ * Split in two: the frame update proper, which takes sin/cos already
+ * computed, and a convenience wrapper that computes them first.
+ *
+ * fk_jacobian() uses the former with ikm::sincos_batch(), because the six
+ * CORDIC evaluations are independent of the chain and do not belong on its
+ * critical path.  fk() and rot03() keep the wrapper - they are on
+ * ik_analytic's path, which has no LUT budget for a second CORDIC instance.
+ */
+static void dh_step_sc(int i, ik_real_t st, ik_real_t ct,
+                       ik_real_t R[3][3], ik_real_t p[3])
 {
 #pragma HLS INLINE
-    ik_real_t ct, st;
-    ikm::sincos(th, st, ct);
-
     const ik_real_t ca = (ik_real_t)IK_DH_CA[i];
     const ik_real_t sa = (ik_real_t)IK_DH_SA[i];
     const ik_real_t a  = (ik_real_t)IK_DH_A[i];
@@ -32,28 +39,36 @@ static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3])
     ap[1] = (ik_real_t)(a * st);
     ap[2] = d;
 
-    /* p <- p + R * ap   (must use the pre-update R) */
+    /* p <- p + R * ap   (must use the pre-update R)
+     *
+     * II=1 with the inner reduction unrolled: three multipliers, three
+     * cycles.  This was fully rolled back when the budget was 126% of the
+     * DSPs and every multiplier had to be justified; with the chain's CORDIC
+     * latency now hoisted out by sincos_batch(), these two products became
+     * the largest remaining term in a DH step.  See ik_config.hpp. */
     ik_real_t np[3];
 DH_P:
-    /* Rolled, like the CORDIC loops above: one multiplier reused nine
-     * times costs far less silicon than nine instantiated in parallel,
-     * and this runs once per joint in an already CORDIC-dominated latency
-     * budget. */
     for (int r = 0; r < 3; r++) {
+#pragma HLS PIPELINE II=1
         ik_acc_t acc = (ik_acc_t)p[r];
         for (int c = 0; c < 3; c++) {
+#pragma HLS UNROLL
             acc += (ik_acc_t)(R[r][c] * ap[c]);
         }
         np[r] = (ik_real_t)acc;
     }
 
-    /* R <- R * AR, rolled - see DH_P above. */
+    /* R <- R * AR.  Nine dot products of three terms; at II=1 with k
+     * unrolled that is nine cycles against twenty-seven rolled, sharing the
+     * same three multipliers as DH_P above since the two never overlap. */
     ik_real_t nR[3][3];
 DH_R:
     for (int r = 0; r < 3; r++) {
         for (int c = 0; c < 3; c++) {
+#pragma HLS PIPELINE II=1
             ik_acc_t acc = (ik_acc_t)0;
             for (int k = 0; k < 3; k++) {
+#pragma HLS UNROLL
                 acc += (ik_acc_t)(R[r][k] * AR[k][c]);
             }
             nR[r][c] = (ik_real_t)acc;
@@ -69,6 +84,14 @@ DH_WB:
             R[r][c] = nR[r][c];
         }
     }
+}
+
+static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3])
+{
+#pragma HLS INLINE
+    ik_real_t ct, st;
+    ikm::sincos(th, st, ct);
+    dh_step_sc(i, st, ct, R, p);
 }
 
 /* ------------------------------------------------------------------ */
@@ -171,6 +194,12 @@ JC_I:
 
     /* Joint i rotates about z_{i-1}, anchored at o_{i-1}: capture the frame
      * BEFORE applying step i. */
+    /* All six CORDIC evaluations up front, pipelined.  They depend only on
+     * q, not on the chain, so leaving them inside JC_CHAIN put six serial
+     * CORDIC latencies on a critical path that had no need of them. */
+    ik_real_t sq[IK_DOF], cq[IK_DOF];
+    ikm::sincos_batch(q, sq, cq);
+
 JC_CHAIN:
     for (int i = 0; i < IK_DOF; i++) {   /* PIPELINE off - see fk()'s FK_CHAIN */
 #pragma HLS PIPELINE off
@@ -180,7 +209,7 @@ JC_CHAIN:
         org[i][0] = pc[0];
         org[i][1] = pc[1];
         org[i][2] = pc[2];
-        dh_step(i, q[i], Rc, pc);
+        dh_step_sc(i, sq[i], cq[i], Rc, pc);
     }
 
 JC_COPY:

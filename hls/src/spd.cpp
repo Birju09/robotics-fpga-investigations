@@ -1,4 +1,5 @@
 #include "spd.hpp"
+#include "ik_math.hpp"
 
 /*
  * A = L D L^T, then solve by substitution.  See spd.hpp for why this exists
@@ -78,7 +79,10 @@ SPD_D:
             st = IK_ERR_SINGULAR;
             dj = (ik_work_t)1;
         }
-        invD[j] = (ik_work_t)((ik_real_t)1 / (ik_real_t)dj);
+        /* ikm::recip(), not '/': six divides per call at roughly a cycle
+         * per result bit were the largest single term left in this solver
+         * once Gauss-Jordan was gone.  See ik_math.hpp. */
+        invD[j] = ikm::recip(dj);
 
 SPD_COL:
         for (int i = j + 1; i < IK_MAT_MAX; i++) {
