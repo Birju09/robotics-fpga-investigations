@@ -120,9 +120,11 @@ make -C hls syn
 make -C hls reports        # latency + utilisation summary
 make -C hls ip
 
-# 3. hardware — defaults to ik_analytic_kernel alone; the xc7z020's 220 DSPs
-#    do not hold more than that (see Status).  Other combinations:
+# 3. hardware — defaults to ik_analytic_kernel alone at 80 MHz (see Status
+#    for why both).  Other combinations and clocks:
 #      ... -tclargs --kernels mat_mul_kernel,mat_inv_kernel
+#      ... -tclargs --clk 100
+#    Stops without writing an XSA if implementation misses timing.
 vivado -mode batch -source scripts/build_vivado.tcl
 
 # 4. register map, then the application
@@ -266,6 +268,26 @@ is needed to switch.
 synthesis. The `UTLZ-1` DRC error only reports a whole-device total, which
 tells you that you are over budget but not which kernel spent it; the
 per-kernel table is the thing you actually need and it is free to emit.
+
+With the design fitting, the next build placed and routed but **missed setup
+timing at 100 MHz: WNS = −1.582 ns** (hold was fine, WHS +0.033). HLS schedules
+against `clock=10` with 12.5% uncertainty, but that uncertainty is an estimate
+made before routing exists, and a DSP-heavy design routed at 75% DSP occupancy
+does not get the routes it assumed. The design closes at roughly 86 MHz, so the
+**default PL clock is now 80 MHz** (`--clk` overrides it), leaving about 0.9 ns
+of margin — enough that the paths moving under a new clock does not push it
+back under. Nothing in the measurement depends on the number: `ik_driver.c`
+times with the PS global timer and `main.c` reports nanoseconds, so the PL
+figure stays correct and simply scales. Any latency number quoted from this
+design should be quoted with its clock.
+
+The script also **refuses to write an XSA when timing fails** (override with
+`--allow-timing-fail`), and prints the worst failing paths first. A bitstream
+with negative slack still programs and still returns answers — occasionally
+wrong ones, varying with temperature and with which path lost the race. That is
+indistinguishable from a kernel bug, and this investigation exists to attribute
+latency differences to the target rather than to chance. The previous run
+exported one without comment.
 
 Not yet run to completion on real hardware — co-simulation and the on-target
 measurements themselves. The code is staged so that

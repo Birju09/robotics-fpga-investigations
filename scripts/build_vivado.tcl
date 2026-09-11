@@ -28,6 +28,20 @@ set build_dir $root_dir/build/vivado
 set hls_dir   $root_dir/hls/build
 set run_bit   1
 set jobs      8
+set allow_tns 0
+
+# PL clock, MHz.  HLS schedules the kernels against clock=10 with 12.5%
+# uncertainty, but that uncertainty is a guess at routing it has not done yet:
+# at 100 MHz this design closed placement and then missed setup by 1.582 ns
+# post-route, needing 11.582 ns.  80 MHz (12.5 ns) clears that with ~0.9 ns in
+# hand, which is enough margin to survive the paths moving when the clock
+# changes.  Raise it with --clk once a build shows positive WNS to spare.
+#
+# Nothing in the measurement depends on this number: ik_driver.c times with the
+# PS global timer and main.c reports nanoseconds, so the PL figure stays
+# correct - it just gets proportionally larger.  Report the clock alongside any
+# latency number, because a PS-vs-PL ratio is meaningless without it.
+set clk_mhz   80
 
 # The xc7z020 has 220 DSP48E1 and that is the binding constraint here.
 # ik_dls_kernel alone needs ~126% of them; ik_analytic_kernel plus the two
@@ -50,6 +64,8 @@ for {set i 0} {$i < $argc} {incr i} {
         "--hls-dir" { incr i; set hls_dir [file normalize [lindex $argv $i]] }
         "--jobs"    { incr i; set jobs [lindex $argv $i] }
         "--kernels" { incr i; set kernels [split [lindex $argv $i] ","] }
+        "--clk"     { incr i; set clk_mhz [lindex $argv $i] }
+        "--allow-timing-fail" { set allow_tns 1 }
         default     { puts "WARNING: ignoring unknown argument [lindex $argv $i]" }
     }
 }
@@ -152,11 +168,11 @@ if {$board_set} {
                  Master "Disable" Slave "Disable"} $ps
 }
 
-# One general-purpose AXI master, PL clock at 100 MHz to match the 10 ns
-# constraint the kernels were synthesised against.
+# One general-purpose AXI master; PL clock from $clk_mhz (see the note there).
+puts "INFO: PL clock $clk_mhz MHz"
 set_property -dict [list \
     CONFIG.PCW_USE_M_AXI_GP0        {1} \
-    CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ {100} \
+    CONFIG.PCW_FPGA0_PERIPHERAL_FREQMHZ $clk_mhz \
     CONFIG.PCW_EN_CLK0_PORT         {1} \
 ] $ps
 
@@ -215,9 +231,37 @@ if {$run_bit} {
     }
 
     open_run impl_1
+    set wns [get_property SLACK [get_timing_paths -delay_type max]]
+    set whs [get_property SLACK [get_timing_paths -delay_type min]]
     puts "INFO: timing summary"
-    puts "        WNS = [get_property SLACK [get_timing_paths -delay_type max]]"
-    puts "        WHS = [get_property SLACK [get_timing_paths -delay_type min]]"
+    puts "        WNS = $wns"
+    puts "        WHS = $whs"
+
+    # A bitstream that misses timing still programs, still runs, and still
+    # returns answers - occasionally wrong ones, dependent on temperature and
+    # on which path happened to lose the race.  That failure mode is
+    # indistinguishable from a bug in the kernel, and this investigation exists
+    # to attribute latency differences to the target rather than to chance, so
+    # exporting one silently is the worst thing this script could do.  Print
+    # the paths that failed and stop.  --allow-timing-fail overrides it when
+    # you want the XSA for a flow check rather than for a measurement.
+    if {$wns < 0 || $whs < 0} {
+        puts "INFO: worst failing paths"
+        report_timing_summary -max_paths 1 -report_unconstrained
+        report_timing -delay_type max -max_paths 10 -nworst 1 -sort_by slack
+
+        set fmax [format "%.1f" [expr {1000.0 / (1000.0/$clk_mhz - $wns)}]]
+        set msg "Implementation missed timing: WNS = $wns, WHS = $whs at\
+                 $clk_mhz MHz.\n\
+                 The design closes at roughly $fmax MHz; rebuild with\
+                 '-tclargs --clk <mhz>' at or below that.\n\
+                 No XSA was written - a bitstream with negative slack produces\
+                 intermittently wrong results that read as kernel bugs.\n\
+                 Pass --allow-timing-fail to export one anyway."
+        if {!$allow_tns} { error $msg }
+        puts "WARNING: $msg"
+        puts "WARNING: exporting anyway; do not trust measurements from this bitstream."
+    }
 
     set xsa [file join $build_dir ${proj_name}.xsa]
     write_hw_platform -fixed -include_bit -force -file $xsa
