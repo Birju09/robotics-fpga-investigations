@@ -44,6 +44,7 @@ SW_SOURCES = [
     ("hls/src", "kinematics.cpp"),
     ("hls/src", "matmul.cpp"),
     ("hls/src", "matinv.cpp"),
+    ("hls/src", "spd.cpp"),
     ("hls/src", "ik_analytic.cpp"),
     ("hls/src", "ik_dls.cpp"),
 ]

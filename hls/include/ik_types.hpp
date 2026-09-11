@@ -28,6 +28,7 @@
  */
 typedef double ik_real_t;
 typedef double ik_acc_t;
+typedef double ik_work_t;
 
 #else
 
@@ -58,6 +59,29 @@ typedef ap_fixed<32, 16, AP_RND, AP_SAT> ik_real_t;
  * requirements live entirely in ik_real_t above and are unaffected by this.
  */
 typedef ap_fixed<64, 32, AP_TRN, AP_WRAP> ik_acc_t;
+
+/*
+ * Internal working storage: the same Q16.16 format as ik_real_t, but
+ * truncating rather than rounding.
+ *
+ * Every cast to ik_real_t synthesises a rounding adder.  In a factorisation
+ * whose inner loop stores a result per cycle, that hardware is paid for on
+ * every store, and LUTs are the binding resource on this part - ik_dls_kernel
+ * sits at 96% of them.  Truncation costs up to 1 LSB of bias per store, two
+ * decades below the residual tolerances the testbenches assert.
+ *
+ * Saturation is deliberately KEPT, unlike in ik_acc_t.  That type's values
+ * are provably in range, so AP_SAT there was dead hardware; a factorisation's
+ * intermediates can genuinely grow, and the difference between saturating and
+ * wrapping is the difference between a degraded answer and a sign-flipped
+ * one.  That is exactly the failure mode ik_real_t's AP_SAT exists to prevent
+ * and it is not worth trading for area.
+ *
+ * Use this for values that stay inside a kernel.  Anything crossing an IP
+ * boundary stays ik_real_t, which is what model/ik_model.py is bit-compared
+ * against.
+ */
+typedef ap_fixed<32, 16, AP_TRN, AP_SAT> ik_work_t;
 
 #endif
 

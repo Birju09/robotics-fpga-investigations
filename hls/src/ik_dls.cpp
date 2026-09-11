@@ -1,7 +1,7 @@
 #include "ik_kernels.hpp"
 #include "kinematics.hpp"
 #include "matmul.hpp"
-#include "matinv.hpp"
+#include "spd.hpp"
 #include "ik_math.hpp"
 
 /*
@@ -22,9 +22,10 @@ int iks::dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
              ik_real_t q[IK_DOF], int *iters, ik_real_t *resid)
 {
 #pragma HLS INLINE off
-    /* All three products per iteration (A=JJ^T, U, DQ) go through the single
+    /* Both products per iteration (A=JJ^T and DQ=J^T u) go through the single
      * mm::multiply() call site in the MULT loop below - see the comment
-     * there for why, and ik_config.hpp for the DSP budget this is part of. */
+     * there for why, and ik_config.hpp for the DSP budget this is part of.
+     * The linear solve between them is spd::solve(), not an inversion. */
 
 DLS_SEED:
     for (int i = 0; i < IK_DOF; i++) {
@@ -76,70 +77,56 @@ DLS_NORM:
             break;
         }
 
-        /* e as a 6x1 column, padded.  Hoisted above the multiply loop
-         * because that loop's s=1 stage consumes it. */
-        ik_real_t E[IK_MAT_MAX][IK_MAT_MAX];
-DLS_EVEC:
-        for (int i = 0; i < IK_MAT_MAX; i++) {
-#pragma HLS UNROLL
-            for (int j = 0; j < IK_MAT_MAX; j++) {
-#pragma HLS UNROLL
-                E[i][j] = (j == 0 && i < IK_DOF) ? e[i] : (ik_real_t)0;
-            }
-        }
-
-        /* Three products per iteration:
+        /* Two products per iteration:
          *
-         *   s=0   A  = J J^T     then + lambda^2 I, then inverted to Ainv
-         *   s=1   U  = Ainv E
-         *   s=2   DQ = J^T U
+         *   s=0   A  = J J^T      then + lambda^2 I, then solved for u
+         *   s=1   DQ = J^T u
          *
-         * A is symmetric positive definite by construction, which is what
-         * keeps the inversion well conditioned even at a singularity - that
-         * is the whole point of the damping.  Solving for U first keeps s=1
-         * and s=2 at 6x6-by-6x1 instead of forming the 6x6 pseudo-inverse.
+         * A is symmetric positive definite by construction - that is what the
+         * damping buys, and it is what keeps the system well conditioned even
+         * at a singularity.  So u solves A u = e directly by LDL^T, with no
+         * pivoting and no explicit inverse.
          *
-         * All three go through the one mm::multiply() call site below.
-         * Straight-line calls to a non-inlined function are not shared by
-         * Vitis HLS the way calls inside a loop are, and #pragma HLS
-         * ALLOCATION instances=... limit=1 does not enforce it in this
+         * This used to form A^-1 by Gauss-Jordan and then multiply it by e,
+         * which is roughly three times the arithmetic and needed a third
+         * product (U = Ainv E) that substitution now does for free.  DLS
+         * never wanted an inverse; it wanted a solve.  See spd.hpp.
+         *
+         * Both remaining products go through the one mm::multiply() call site
+         * below.  Straight-line calls to a non-inlined function are not
+         * shared by Vitis HLS the way calls inside a loop are, and #pragma
+         * HLS ALLOCATION instances=... limit=1 does not enforce it in this
          * release either (tried, verified no effect on the synthesised
-         * instance count) - so three call sites meant three separate
-         * multiplier banks.  s=1 and s=2 were already routed through a
-         * shared loop; s=0 could not join while mi::invert() sat between
-         * them as straight-line code.  Hanging the inversion off the s==0
-         * branch of the same loop puts it back in sequence at one instance,
-         * the same pattern that already shares dh_step() across
-         * fk()/rot03()/fk_jacobian().
+         * instance count) - so two call sites would mean two multiplier
+         * banks.  This is the same pattern that already shares dh_step()
+         * across fk()/rot03()/fk_jacobian().
          *
          * Vitis HLS does not support arrays of pointers ("pointer to
          * pointer") for synthesis, so the operands are muxed by value into
          * fixed staging buffers rather than selected by an array of
-         * pointers. */
-        ik_real_t Ainv[IK_MAT_MAX][IK_MAT_MAX];
-        ik_real_t U[IK_MAT_MAX][IK_MAT_MAX];
+         * pointers.  stageA is J for both stages; only stageB and the
+         * transpose flags differ. */
+        ik_real_t U[IK_MAT_MAX][IK_MAT_MAX];    /* u staged as a column */
         ik_real_t DQ[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t stageA[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t stageB[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t stageC[IK_MAT_MAX][IK_MAT_MAX];
 
-        const bool mulTa[3] = { false,  false, true };
-        const bool mulTb[3] = { true,   false, false };
-        const int  mulN[3]  = { IK_DOF, 1,     1 };
+        const bool mulTa[2] = { false,  true  };
+        const bool mulTb[2] = { true,   false };
+        const int  mulN[2]  = { IK_DOF, 1     };
 
         bool singular = false;
 MULT:
-        for (int s = 0; s < 3; s++) {
+        for (int s = 0; s < 2; s++) {
 #pragma HLS PIPELINE off
 MULT_IN:
             for (int r = 0; r < IK_MAT_MAX; r++) {
 #pragma HLS UNROLL
                 for (int c = 0; c < IK_MAT_MAX; c++) {
 #pragma HLS UNROLL
-                    stageA[r][c] = (s == 1) ? Ainv[r][c] : J[r][c];
-                    stageB[r][c] = (s == 0) ? J[r][c]
-                                 : (s == 1) ? E[r][c]
-                                            : U[r][c];
+                    stageA[r][c] = J[r][c];
+                    stageB[r][c] = (s == 0) ? J[r][c] : U[r][c];
                 }
             }
 
@@ -158,23 +145,33 @@ DLS_DAMP:
                                 : stageC[r][c];
                     }
                 }
-                /* Flagged rather than broken out of, matching mi::invert()'s
-                 * own choice not to bail early: s=1 and s=2 then compute
-                 * values that DLS_ITER discards on the way out.  Breaking
-                 * here would save two multiplies on an error path that ends
-                 * the solve anyway, at the cost of a third data-dependent
-                 * exit in a kernel whose latency story is already the thing
-                 * under measurement. */
-                if (mi::invert(A, IK_DOF, Ainv) != IK_OK)
+
+                /* Flagged rather than broken out of, matching spd::solve()'s
+                 * own choice not to bail early: s=1 then computes a value
+                 * DLS_ITER discards on the way out.  Breaking here would save
+                 * one product on an error path that ends the solve anyway, at
+                 * the cost of another data-dependent exit in a kernel whose
+                 * latency story is the thing under measurement. */
+                ik_real_t uvec[IK_MAT_MAX];
+                if (spd::solve(A, IK_DOF, e, uvec) != IK_OK)
                     singular = true;
+
+DLS_UVEC:
+                for (int r = 0; r < IK_MAT_MAX; r++) {
+#pragma HLS UNROLL
+                    for (int c = 0; c < IK_MAT_MAX; c++) {
+#pragma HLS UNROLL
+                        U[r][c] = (c == 0 && r < IK_DOF) ? uvec[r]
+                                                         : (ik_real_t)0;
+                    }
+                }
             } else {
 MULT_OUT:
                 for (int r = 0; r < IK_MAT_MAX; r++) {
 #pragma HLS UNROLL
                     for (int c = 0; c < IK_MAT_MAX; c++) {
 #pragma HLS UNROLL
-                        if (s == 1) U[r][c]  = stageC[r][c];
-                        else        DQ[r][c] = stageC[r][c];
+                        DQ[r][c] = stageC[r][c];
                     }
                 }
             }

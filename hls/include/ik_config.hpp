@@ -111,15 +111,23 @@ static const double IK_DH_SA[IK_DOF] = { 1.0,   0.0,   1.0,  -1.0,   1.0,   0.0 
  * cost in latency.
  *
  * Sites, current values:
- *   hls/src/matinv.cpp     MI_NORM  rolled (II=1, 1 multiplier)
- *   hls/src/matinv.cpp     MI_ELIM  II=6   (12 products -> 2 multipliers)
  *   hls/src/matmul.cpp     MM_COL   II=3   ( 6 products -> 2 multipliers)
  *   hls/src/kinematics.cpp JC_COLS  II=3   ( 6 products -> 2 multipliers)
  *   hls/src/ik_dls.cpp     DLS_NORM rolled (II=1, 1 multiplier)
+ *   hls/src/spd.cpp        all reductions rolled at II=1
+ *   hls/src/matinv.cpp     MI_NORM  rolled (II=1, 1 multiplier)
+ *   hls/src/matinv.cpp     MI_ELIM  II=6   (12 products -> 2 multipliers)
  *
- * Note that matmul.cpp and matinv.cpp are shared with the standalone
- * mat_mul_kernel / mat_inv_kernel IPs, so changing them changes what those
- * IPs characterise.  Report the II alongside any latency figure from them.
+ * matinv.cpp is no longer on the ik_dls path - spd::solve() replaced it, see
+ * spd.hpp - so its two entries now only affect the standalone
+ * mat_inv_kernel.  matmul.cpp is still shared with mat_mul_kernel.  Changing
+ * either changes what those IPs characterise, so report the II alongside any
+ * latency figure from them.
+ *
+ * Once this fits with margin, the next term to attack is not a multiplier at
+ * all: spd::solve() spends roughly six reciprocals per call at ~35 cycles
+ * each, which is most of its latency.  A Newton-Raphson reciprocal seeded
+ * from a small table would trade LUTs for a large share of that.
  */
 
 /* ---------------- analytic branch selection bits ---------------- */

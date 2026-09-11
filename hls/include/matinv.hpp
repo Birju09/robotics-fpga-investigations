@@ -7,12 +7,17 @@
 /*
  * Dense matrix inversion by Gauss-Jordan elimination with partial pivoting.
  *
- * Why Gauss-Jordan and not Cholesky: the matrix the DLS solver inverts,
- * (J J^T + lambda^2 I), is symmetric positive definite, so Cholesky would be
- * the cheaper and more stable choice for that caller alone.  But this is also
- * being exported as a general-purpose IP, and Gauss-Jordan handles any
- * invertible matrix while needing only a divider - no square root.  The
- * damping already guarantees the conditioning that Cholesky would have bought.
+ * Why Gauss-Jordan and not Cholesky: this is exported as a general-purpose
+ * IP, and Gauss-Jordan handles any invertible matrix while needing only a
+ * divider - no square root.
+ *
+ * ik_dls no longer calls this.  It used to, and the note that used to sit
+ * here said a Cholesky-family factorisation would be cheaper and more stable
+ * for that caller, since (J J^T + lambda^2 I) is symmetric positive definite.
+ * That is now spd::solve() - see spd.hpp - which also skips forming the
+ * inverse at all, because DLS only ever wanted the solution vector.  This
+ * kernel stays as the general-purpose primitive and as the reference
+ * spd::solve() is cross-checked against in hls/tb/tb_spd.cpp.
  */
 
 namespace mi {

@@ -17,9 +17,9 @@ INC      := -I../include -I.
 CXXFLAGS := -O2 -std=c++14 -Wall -Wno-unknown-pragmas -Wno-unused-label -DIK_USE_FLOAT \
             -DTB_VECTOR_DIR=\"vectors\" $(INC)
 
-SRC   := ../src/matmul.cpp ../src/matinv.cpp ../src/kinematics.cpp \
-         ../src/ik_analytic.cpp ../src/ik_dls.cpp
-TESTS := tb_matmul tb_matinv tb_fk tb_ik_analytic tb_ik_dls
+SRC   := ../src/matmul.cpp ../src/matinv.cpp ../src/spd.cpp \
+         ../src/kinematics.cpp ../src/ik_analytic.cpp ../src/ik_dls.cpp
+TESTS := tb_matmul tb_matinv tb_spd tb_fk tb_ik_analytic tb_ik_dls
 BIN   := $(addprefix build/,$(TESTS))
 
 .PHONY: all run clean

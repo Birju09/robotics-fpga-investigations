@@ -6,16 +6,40 @@ void mm::multiply(const ik_real_t A[IK_MAT_MAX][IK_MAT_MAX],
                   ik_real_t C[IK_MAT_MAX][IK_MAT_MAX])
 {
 #pragma HLS INLINE off
-MM_ROW:
+    /* Clamped rather than trusted: the loop bounds below index C directly, so
+     * a caller passing something out of range would write past the array.
+     * mat_mul_kernel checks its arguments, but mm::multiply() is also called
+     * straight from ik_dls without one. */
+    const int mr = (m < IK_MAT_MAX) ? m : IK_MAT_MAX;
+    const int nc = (n < IK_MAT_MAX) ? n : IK_MAT_MAX;
+
+    /* Zero the whole destination first - no multiplier, II=1 - so the compute
+     * loop below can visit only the m x n block that was actually asked for.
+     *
+     * The old form ran the full 6x6 and wrote zeros to the cells outside it,
+     * which meant the two n=1 products ik_dls issues per iteration (U and DQ,
+     * both 6x6-by-6x1) each spent 36 MM_COL iterations to produce 6 useful
+     * values.  At II=3 that is 216 cycles a solve thrown away. */
+MM_ZERO:
     for (int i = 0; i < IK_MAT_MAX; i++) {
+        for (int j = 0; j < IK_MAT_MAX; j++) {
+#pragma HLS PIPELINE II=1
+            C[i][j] = (ik_real_t)0;
+        }
+    }
+
+MM_ROW:
+    for (int i = 0; i < mr; i++) {
+#pragma HLS LOOP_TRIPCOUNT min=1 max=6
 MM_COL:
         /* II=3, not 1.  MM_DOT below is fully unrolled, so the II of this
          * loop is what decides whether its six products become six
-         * multipliers or two shared across three cycles.  At II=1 each of
-         * the three mm::multiply() sites in ik_dls cost ~24 DSP slices.
+         * multipliers or two shared across three cycles.  At II=1 each
+         * mm::multiply() site in ik_dls cost ~24 DSP slices.
          * See the resource/latency note in ik_config.hpp. */
-        for (int j = 0; j < IK_MAT_MAX; j++) {
+        for (int j = 0; j < nc; j++) {
 #pragma HLS PIPELINE II=3
+#pragma HLS LOOP_TRIPCOUNT min=1 max=6
             /* Q32.32 accumulator: the product of two Q16.16 values is exactly
              * Q32.32, and six of them sum without rounding.  One rounding step
              * happens on the store below, which is what makes this bit-
@@ -30,7 +54,7 @@ MM_DOT:
                     acc += (ik_acc_t)(a * b);
                 }
             }
-            C[i][j] = (i < m && j < n) ? (ik_real_t)acc : (ik_real_t)0;
+            C[i][j] = (ik_real_t)acc;
         }
     }
 }
