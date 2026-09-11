@@ -120,6 +120,20 @@ proc find_ip_repos {root} {
 }
 
 # ------------------------------------------------------------ project ----
+# This script is Zynq-7000/PYNQ-specific: it instantiates processing_system7
+# and wires kernels to it through M_AXI_GP0. A Versal part (e.g. VEK385, for
+# out-of-context resource/latency analysis - see `make -C hls BOARD=vek385
+# syn reports`) has no processing_system7 and would need a versal_cips-based
+# block design instead, which this script does not build. Fail loudly here
+# rather than leaving get_ipdefs to fail confusingly partway through.
+if {[string match -nocase "xcve*" $part] || [string match -nocase "xcvc*" $part] ||
+    [string match -nocase "xcvm*" $part] || [string match -nocase "xcvp*" $part]} {
+    error "Part '$part' looks like a Versal device; this script only builds\
+           the Zynq-7000/PYNQ platform (processing_system7). For an\
+           out-of-context Versal resource/latency comparison, use\
+           'make -C hls BOARD=vek385 syn reports' instead."
+}
+
 file mkdir $build_dir
 create_project $proj_name $build_dir -part $part -force
 set_property target_language Verilog [current_project]

@@ -135,6 +135,15 @@ vitis -s scripts/build_vitis.py
 Override the device with `make -C hls PART=<part>` and
 `vivado ... -tclargs --part <part>`.
 
+`make -C hls BOARD=vek385 syn reports` runs HLS C-synthesis for the four
+kernels against a Versal part (default guess `xcve2302-sfvc784-2LP-e-S`;
+confirm against your own install and override with `PART=` if it differs),
+writing to `hls/build-vek385/` so it never clobbers a PYNQ build's reports.
+This is out-of-context resource/latency estimation only — `flow_target` is
+still `vivado`, but nothing downstream of HLS runs. `scripts/build_vivado.tcl`
+remains Zynq-7000/PYNQ-only (it instantiates `processing_system7`, which
+VEK385 doesn't have) and now errors immediately if pointed at a Versal part.
+
 ### The register map step is not optional
 
 Vitis HLS assigns AXI4-Lite offsets from argument order and width. `sw/src/ik_regmap.h`

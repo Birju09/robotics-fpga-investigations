@@ -20,11 +20,33 @@
 #   make clean
 #
 # Override the device with:  make PART=xc7z020clg400-1 all
+#
+# BOARD=vek385 is a convenience for out-of-context resource/latency analysis
+# on a Versal part: it sets PART to the VEK385's device and moves the build
+# output to build-vek385/ so it never clobbers a PYNQ build's reports. It
+# does NOT change anything else about the kernels or the flow_target - this
+# is still `flow_target=vivado` Vitis HLS estimation, not a real Versal
+# platform (see scripts/build_vivado.tcl, which is Zynq-7000/PYNQ-only: it
+# instantiates processing_system7, which VEK385 does not have). Confirm the
+# exact part string against your own install
+# (`get_parts -filter {board_part=~*vek385*}` in Vivado, or the board_part
+# XML under a Versal board_files install) and override with an explicit
+# PART= if it differs.
+#
+#   make BOARD=vek385 syn reports
+#   make BOARD=vek385 PART=<exact-part> syn      # override the guessed part
+
+BOARD   ?=
+PART    ?=
+ifeq ($(BOARD),vek385)
+  PART := $(if $(PART),$(PART),xcve2302-sfvc784-2LP-e-S)
+endif
 
 KERNELS := matmul matinv ik_analytic ik_dls
-BUILD   := build
+BUILD   := $(if $(BOARD),build-$(BOARD),build)
 VXX     := v++
 VRUN    := vitis-run
+PARTOPT := $(if $(PART),--part $(PART))
 
 .PHONY: all csim syn cosim ip reports host clean vectors $(KERNELS)
 
@@ -42,16 +64,16 @@ $(BUILD):
 
 define hls_rule
 csim-$(1): vectors | $(BUILD)
-	$(VRUN) --mode hls --csim --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
+	$(VRUN) --mode hls --csim $(PARTOPT) --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
 
 syn-$(1): | $(BUILD)
-	$(VXX) -c --mode hls --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
+	$(VXX) -c --mode hls $(PARTOPT) --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
 
 cosim-$(1): vectors | $(BUILD)
-	$(VRUN) --mode hls --cosim --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
+	$(VRUN) --mode hls --cosim $(PARTOPT) --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
 
 ip-$(1): | $(BUILD)
-	$(VRUN) --mode hls --package --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
+	$(VRUN) --mode hls --package $(PARTOPT) --config cfg/$(1).cfg --work_dir $(BUILD)/$(1)
 endef
 
 $(foreach k,$(KERNELS),$(eval $(call hls_rule,$(k))))
