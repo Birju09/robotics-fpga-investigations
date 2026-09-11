@@ -43,18 +43,28 @@ set allow_tns 0
 # latency number, because a PS-vs-PL ratio is meaningless without it.
 set clk_mhz   80
 
-# The xc7z020 has 220 DSP48E1 and that is the binding constraint here.
-# ik_dls_kernel alone needs ~126% of them; ik_analytic_kernel plus the two
-# standalone matrix IPs came to 230, ten over.  Default to ik_analytic_kernel
-# on its own so a bitstream and real on-target PS-vs-PL numbers are
-# obtainable now.  Pass --kernels to build any other combination, e.g.
+# Which kernels go in the bitstream.
+#
+# The xc7z020 has 220 DSP48E1 and 53,200 LUT, and both are now binding.
+# ik_dls_kernel used to need ~126% of the DSPs and could not be built at all;
+# raising II at the five multiply sites listed in hls/include/ik_config.hpp
+# brought it to 186 DSP (85%) and 51k LUT (96%).  It fits - on its own.
+#
+# It does NOT fit alongside ik_analytic_kernel, which is 75% DSP and 86% LUT
+# by itself, so the single-bitstream head-to-head is still out of reach on
+# this part.  Build them separately and compare at the same clock.  Note the
+# LUT figure: at 96% occupancy expect placement to be slow and timing to be
+# tight, and be ready to drop --clk below 80 if the gate below trips.
+#
+# Pass --kernels to build any other combination, e.g.
+#   --kernels ik_analytic_kernel
 #   --kernels mat_mul_kernel,mat_inv_kernel
 # to characterise the matrix primitives in their own bitstream.
 #
-# sw/src/main.c needs no matching edit: its MATMUL_BASE/MATINV_BASE guards
-# fall back to 0 when those IPs are absent from xparameters.h and the matrix
-# section compiles out.
-set kernels {ik_analytic_kernel}
+# sw/src/main.c needs no matching edit for any of these: it resolves each
+# kernel's base address from xparameters.h, falls back to 0 when an IP is
+# absent, and tests whatever is actually present.
+set kernels {ik_dls_kernel}
 
 # ---------------------------------------------------------------- args ----
 for {set i 0} {$i < $argc} {incr i} {

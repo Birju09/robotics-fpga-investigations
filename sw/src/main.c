@@ -16,14 +16,19 @@
  * is itself a finding: for a kernel this small, moving data can cost more than
  * computing.  Compare against `make -C hls reports`.
  *
- * Scope: ik_analytic only for now.  ik_dls_kernel still does not fit on the
- * xc7z020 standalone (~126% DSP utilisation after the resource-sharing work
- * in hls/src/ik_dls.cpp and hls/include/ik_math.hpp) - see the README
- * Status section.  scripts/build_vivado.tcl defaults to a bitstream with
- * mat_mul_kernel, mat_inv_kernel and ik_analytic_kernel only, so DLS's AXI
- * base address does not exist in xparameters.h for this build; the DLS
- * driver code (ik_driver.c, ik_sw_ref.cpp) is left in place for when it
- * fits and this harness is extended back to cover it.
+ * Scope
+ * -----
+ * This harness tests whichever kernels the bitstream actually contains.  Each
+ * base address is resolved from xparameters.h and falls back to 0 when the IP
+ * is absent, and every section is guarded on its own HAVE_* flag, so the same
+ * source covers an analytic-only build, a DLS-only build, or both.
+ *
+ * That matters because they do not currently fit together.  ik_dls_kernel is
+ * 186 DSP / 51k LUT after the II changes in hls/include/ik_config.hpp, and
+ * ik_analytic_kernel is another 165 DSP / 46k LUT - either one alone leaves
+ * the xc7z020 nearly full.  scripts/build_vivado.tcl therefore builds one at
+ * a time; run it twice and compare at the same clock, rather than reading
+ * across two bitstreams built at different ones.
  */
 
 #include <stdio.h>
@@ -52,22 +57,61 @@ static void init_platform_stub(void);
 /* below.  scripts/build_vitis.py prints the macros the platform       */
 /* actually generated - read that first if this cascade misses.        */
 /* ------------------------------------------------------------------ */
+/* HAVE_* rather than testing the address itself: XPAR_* values are often
+ * written with a cast or a U suffix, neither of which is safe in #if
+ * arithmetic.  A separate 0/1 flag is. */
 #if defined(XPAR_IK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR
+#define HAVE_ANALYTIC 1
 #elif defined(XPAR_XIK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define ANALYTIC_BASE XPAR_XIK_ANALYTIC_KERNEL_0_S_AXI_CTRL_BASEADDR
+#define HAVE_ANALYTIC 1
 #elif defined(XPAR_IK_ANALYTIC_KERNEL_0_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_0_BASEADDR
+#define HAVE_ANALYTIC 1
 #elif defined(XPAR_IK_ANALYTIC_KERNEL_S_AXI_CTRL_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_S_AXI_CTRL_BASEADDR
+#define HAVE_ANALYTIC 1
 #elif defined(XPAR_IK_ANALYTIC_KERNEL_BASEADDR)
 #define ANALYTIC_BASE XPAR_IK_ANALYTIC_KERNEL_BASEADDR
+#define HAVE_ANALYTIC 1
 #else
-#error "Cannot find the analytic kernel base address. Run scripts/build_vitis.py and read the 'kernel base addresses in ...' listing it prints after the platform build, then add that spelling here."
+#define ANALYTIC_BASE 0
+#define HAVE_ANALYTIC 0
 #endif
 
-/* ik_dls_kernel is not in the default bitstream (see the file header comment
- * above) - no base address to resolve here until it is added back. */
+#if defined(XPAR_IK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR)
+#define DLS_BASE XPAR_IK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR
+#define HAVE_DLS 1
+#elif defined(XPAR_XIK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR)
+#define DLS_BASE XPAR_XIK_DLS_KERNEL_0_S_AXI_CTRL_BASEADDR
+#define HAVE_DLS 1
+#elif defined(XPAR_IK_DLS_KERNEL_0_BASEADDR)
+#define DLS_BASE XPAR_IK_DLS_KERNEL_0_BASEADDR
+#define HAVE_DLS 1
+#elif defined(XPAR_IK_DLS_KERNEL_S_AXI_CTRL_BASEADDR)
+#define DLS_BASE XPAR_IK_DLS_KERNEL_S_AXI_CTRL_BASEADDR
+#define HAVE_DLS 1
+#elif defined(XPAR_IK_DLS_KERNEL_BASEADDR)
+#define DLS_BASE XPAR_IK_DLS_KERNEL_BASEADDR
+#define HAVE_DLS 1
+#else
+#define DLS_BASE 0
+#define HAVE_DLS 0
+#endif
+
+#if !HAVE_ANALYTIC && !HAVE_DLS
+#error "Neither ik_analytic_kernel nor ik_dls_kernel is in this bitstream, so there is nothing to measure. Check the --kernels list in scripts/build_vivado.tcl; if a kernel IS in the block design, run scripts/build_vitis.py and read the 'kernel base addresses in ...' listing it prints after the platform build, then add that spelling to the cascade above."
+#endif
+
+/* DLS solver arguments.  These mirror IK_DLS_*_DEFAULT in
+ * hls/include/ik_config.hpp and must stay in step with them: lambda = 0.02
+ * and tol = 1e-3 are what model/validate.py's sweep converged on, and the
+ * iteration distribution below is only comparable to that sweep at the same
+ * settings. */
+#define DLS_LAMBDA   0.02f
+#define DLS_TOL      0.001f
+#define DLS_MAX_ITER 64
 
 #if defined(XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define MATMUL_BASE XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR
@@ -149,6 +193,29 @@ static void samp_report(const char *label, samples_t *s)
                    mx / md, ((mx * 100) / md) % 100);
 }
 
+/*
+ * Same five-number summary, but for counts rather than times - used for DLS's
+ * iteration distribution.  Printing it directly under the DLS latency rows is
+ * the point of the whole comparison: the analytic kernel's latency spread is
+ * bus noise, whereas DLS's tracks its iteration spread, and seeing the two
+ * summaries side by side is what makes that attributable rather than asserted.
+ */
+#if HAVE_DLS
+static void samp_report_raw(const char *label, samples_t *s)
+{
+    if (s->n == 0) { xil_printf("  %s: no samples\r\n", label); return; }
+    samp_sort(s);
+
+    uint64_t sum = 0;
+    for (int i = 0; i < s->n; i++) sum += s->v[i];
+
+    xil_printf("  %-26s n=%3d  min=%6u  med=%6u  p95=%6u  max=%6u  mean=%6u\r\n",
+               label, s->n, s->v[0], s->v[s->n / 2],
+               s->v[(s->n * 95) / 100], s->v[s->n - 1],
+               (unsigned)(sum / s->n));
+}
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Register-map self check                                             */
 /*                                                                     */
@@ -191,8 +258,9 @@ static int verify_regmap(ik_dev_t *dev, uintptr_t in_base, uintptr_t out_base,
 }
 
 /* ------------------------------------------------------------------ */
+/* iters < 0 suppresses the iteration column, which only DLS has. */
 static void print_pose_result(int i, const char *tag, int st,
-                              const float *q, const float *qg)
+                              const float *q, const float *qg, int iters)
 {
     float worst = 0.0f;
     for (int j = 0; j < IK_DOF; j++) {
@@ -202,17 +270,31 @@ static void print_pose_result(int i, const char *tag, int st,
         if (d < 0) d = -d;
         if (d > worst) worst = d;
     }
-    xil_printf("    [%2d] %-16s status=%d  worst joint delta = %d urad\r\n",
-               i, tag, st, (int)(worst * 1e6f));
+    if (iters >= 0)
+        xil_printf("    [%2d] %-16s status=%d  worst joint delta = %d urad"
+                   "  iters=%d\r\n",
+                   i, tag, st, (int)(worst * 1e6f), iters);
+    else
+        xil_printf("    [%2d] %-16s status=%d  worst joint delta = %d urad\r\n",
+                   i, tag, st, (int)(worst * 1e6f));
 }
 
 int main(void)
 {
-    ik_dev_t analytic = { ANALYTIC_BASE };
-    ik_dev_t matmul   = { MATMUL_BASE };
-    ik_dev_t matinv   = { MATINV_BASE };
-
-    samples_t s_an_hw, s_an_sw, s_mm, s_mi;
+    /* Declared under the same guards as their use sites: a single-kernel
+     * bitstream is the normal case here, not the exception, and the absent
+     * kernel's state would otherwise sit unused in every such build. */
+#if HAVE_ANALYTIC
+    ik_dev_t  analytic = { ANALYTIC_BASE };
+    samples_t s_an_hw, s_an_sw;
+#endif
+#if HAVE_DLS
+    ik_dev_t  dls = { DLS_BASE };
+    samples_t s_dls_hw, s_dls_sw, s_dls_it;
+#endif
+    ik_dev_t  matmul = { MATMUL_BASE };
+    ik_dev_t  matinv = { MATINV_BASE };
+    samples_t s_mm, s_mi;
 
     init_platform_stub();
 
@@ -222,6 +304,14 @@ int main(void)
     xil_printf("==================================================================\r\n");
     xil_printf(" global timer      : %u Hz\r\n", (unsigned)ik_timer_hz());
     xil_printf(" poses             : %d\r\n", IK_NVEC);
+    /* Which kernels this bitstream actually has.  Printed rather than assumed
+     * because the two IK kernels do not fit together on this part, so every
+     * log has to say which one produced it. */
+    xil_printf(" kernels present   : %s%s%s%s\r\n",
+               HAVE_ANALYTIC ? "ik_analytic " : "",
+               HAVE_DLS      ? "ik_dls "      : "",
+               MATMUL_BASE   ? "mat_mul "     : "",
+               MATINV_BASE   ? "mat_inv"      : "");
 #if IK_REGMAP_GENERATED
     xil_printf(" register map      : generated from this build\r\n");
 #else
@@ -234,9 +324,16 @@ int main(void)
     /* ---- register map sanity ---- */
     xil_printf("-- register map check --\r\n");
     int ok = 1;
+#if HAVE_ANALYTIC
     ok &= verify_regmap(&analytic,
                         XIK_ANALYTIC_KERNEL_CTRL_ADDR_POSE_BASE,
                         XIK_ANALYTIC_KERNEL_CTRL_ADDR_Q_BASE, "analytic");
+#endif
+#if HAVE_DLS
+    ok &= verify_regmap(&dls,
+                        XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE,
+                        XIK_DLS_KERNEL_CTRL_ADDR_Q_BASE, "dls");
+#endif
     if (!ok) {
         xil_printf("\r\n  REGISTER MAP IS WRONG - refusing to report timings.\r\n");
         xil_printf("  Run: make -C hls ip && python3 scripts/gen_regmap.py\r\n");
@@ -253,12 +350,25 @@ int main(void)
             pose[j] = ik_q2f(ik_pose_tbl[i][j]);
             qg[j]   = ik_q2f(ik_qgold_tbl[i][j]);
         }
+#if HAVE_ANALYTIC
         int st = ik_analytic_solve(&analytic, pose, ik_cfg_tbl[i], q, NULL);
-        print_pose_result(i, ik_tag_tbl[i], st, q, qg);
+        print_pose_result(i, ik_tag_tbl[i], st, q, qg, -1);
+#endif
+#if HAVE_DLS
+        {
+            float seed[6];
+            int it = 0;
+            for (int j = 0; j < 6; j++) seed[j] = ik_q2f(ik_seed_tbl[i][j]);
+            int sd = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
+                                  DLS_MAX_ITER, q, &it, NULL, NULL);
+            print_pose_result(i, ik_tag_tbl[i], sd, q, qg, it);
+        }
+#endif
     }
     xil_printf("\r\n");
 
-    /* ---- analytic: PL ---- */
+#if HAVE_ANALYTIC
+    /* ---- analytic: PL vs PS ---- */
     samp_reset(&s_an_hw);
     samp_reset(&s_an_sw);
     for (int i = 0; i < IK_NVEC; i++) {
@@ -274,6 +384,38 @@ int main(void)
         uint64_t t1 = ik_timer_read();
         samp_add(&s_an_sw, (uint32_t)(t1 - t0));
     }
+#endif
+
+#if HAVE_DLS
+    /* ---- DLS: PL vs PS, plus the iteration count behind each sample ----
+     *
+     * Seeded from ik_seed_tbl rather than from the previous solution: a warm
+     * start would make each pose's iteration count depend on the order the
+     * table happens to be in, and the spread is the measurement. */
+    samp_reset(&s_dls_hw);
+    samp_reset(&s_dls_sw);
+    samp_reset(&s_dls_it);
+    for (int i = 0; i < IK_NVEC; i++) {
+        float pose[6], seed[6], q[6];
+        uint32_t c;
+        int it = 0;
+        for (int j = 0; j < 6; j++) {
+            pose[j] = ik_q2f(ik_pose_tbl[i][j]);
+            seed[j] = ik_q2f(ik_seed_tbl[i][j]);
+        }
+
+        ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
+                     q, &it, NULL, &c);
+        samp_add(&s_dls_hw, c);
+        samp_add(&s_dls_it, (uint32_t)it);
+
+        uint64_t t0 = ik_timer_read();
+        ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
+                        q, NULL, NULL);
+        uint64_t t1 = ik_timer_read();
+        samp_add(&s_dls_sw, (uint32_t)(t1 - t0));
+    }
+#endif
 
     /* ---- standalone matrix IPs ---- */
     samp_reset(&s_mm);
@@ -297,8 +439,19 @@ int main(void)
 
     /* ---- report ---- */
     xil_printf("-- latency, PS wall clock around the whole transaction --\r\n");
+#if HAVE_ANALYTIC
     samp_report("analytic  (PL)", &s_an_hw);
     samp_report("analytic  (PS, double)", &s_an_sw);
+#else
+    xil_printf("  ik_analytic          not in this bitstream (skipped)\r\n");
+#endif
+#if HAVE_DLS
+    samp_report("dls       (PL)", &s_dls_hw);
+    samp_report("dls       (PS, double)", &s_dls_sw);
+    samp_report_raw("dls       iterations", &s_dls_it);
+#else
+    xil_printf("  ik_dls               not in this bitstream (skipped)\r\n");
+#endif
     if (MATMUL_BASE && MATINV_BASE) {
         samp_report("mat_mul 6x6x6 (PL)", &s_mm);
         samp_report("mat_inv 6x6   (PL)", &s_mi);
@@ -313,6 +466,14 @@ int main(void)
     xil_printf("PL cycles between ap_start and ap_done, the figures above add\r\n");
     xil_printf("the AXI4-Lite argument traffic.  For kernels this small the\r\n");
     xil_printf("difference is not a rounding error.\r\n");
+#if HAVE_DLS
+    xil_printf("\r\n");
+    xil_printf("max/med on the DLS rows is the real-time figure of merit, and\r\n");
+    xil_printf("the iteration summary below it is where that number comes from:\r\n");
+    xil_printf("the analytic kernel's spread is bus noise, DLS's is the solver.\r\n");
+    xil_printf("A larger part does not bound it - it only makes each iteration\r\n");
+    xil_printf("cheaper.  Compare against the histogram tb_ik_dls prints.\r\n");
+#endif
     xil_printf("==================================================================\r\n");
 
     return 0;
