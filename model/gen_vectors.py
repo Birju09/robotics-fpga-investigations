@@ -233,6 +233,12 @@ def gen_c_header(n=48, path=None):
 
 #include <stdint.h>
 
+/* Bumped whenever this file grows something a consumer might require.  It is
+ * gitignored - reproduced by model/gen_vectors.py rather than checked in - so
+ * pulling a commit updates the code that reads it but not the file itself,
+ * and the resulting error is otherwise just an undeclared identifier. */
+#define IK_VECTORS_HAS_MODEL_ITERS 1
+
 #define IK_NVEC %d
 
 /* { x, y, z, roll, pitch, yaw } */
