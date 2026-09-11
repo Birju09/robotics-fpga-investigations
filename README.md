@@ -289,7 +289,26 @@ indistinguishable from a kernel bug, and this investigation exists to attribute
 latency differences to the target rather than to chance. The previous run
 exported one without comment.
 
-Not yet run to completion on real hardware — co-simulation and the on-target
-measurements themselves. The code is staged so that
-`make -C hls syn && make -C hls reports` and
-`vivado -mode batch -source scripts/build_vivado.tcl` produce them.
+**Run to completion on real hardware.** First on-target numbers, `ik_analytic`
+at 80 MHz, 48 poses:
+
+| path                    | min      | median   | p95      | max      | max/med |
+|-------------------------|----------|----------|----------|----------|---------|
+| PL                      | 10716 ns | 10744 ns | 10781 ns | 10781 ns | 1.00    |
+| PS (double, reference)  | 32446 ns | 32612 ns | 32732 ns | 37923 ns | 1.16    |
+
+PL runs the whole transaction — AXI4-Lite argument writes, `ap_start`, the poll
+loop, result reads — in roughly a third of the PS double-precision reference's
+time, and with essentially no jitter, against 16% at the PS's p95-to-max. That
+is the real-timeness comparison this investigation set out to make.
+
+Getting here needed one more fix, on the PS timer rather than the PL side.
+`libxiltimer` arms its default timer instance from a
+`__attribute__((constructor))` function in `xiltimer.c`, meant to run before
+`main()` with no help from the application. On this BSP it did not (or did not
+finish in time): every `XTime_GetTime()` call returned the same value, and
+every latency in a first hardware run came back as exactly zero — for both PL
+and PS, which is what pointed at the timer rather than at either kernel.
+`ik_timer_init()` in `sw/src/ik_driver.c` now calls `XilSleepTimer_Init()`
+again explicitly and does a `usleep(1)`, which is what actually starts the
+counter.

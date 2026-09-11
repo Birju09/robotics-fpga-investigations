@@ -46,18 +46,22 @@
  * (333 MHz on a -1 speed grade Zynq-7020 at the usual 667 MHz).  XTime_GetTime
  * returns its 64-bit count.  Resolution is ~3 ns, which is fine against
  * kernel latencies in the microsecond range.
+ *
+ * libxiltimer's xiltimer.c already runs XilSleepTimer_Init(&TimerInst) once
+ * from a __attribute__((constructor)) function, which is supposed to fire
+ * before main() with no help from the application.  On this BSP it evidently
+ * doesn't (or doesn't finish arming the counter hardware in time): without
+ * the explicit re-init and the one-tick nudge below, every XTime_GetTime()
+ * call read back the same value and every measured latency in this harness
+ * came out as exactly zero. The usleep(1) exercises the sleep-timer path
+ * once, which is what actually starts the counter.  None of this applies to
+ * the older xtime_l.h BSP, which lazily arms the counter on first read.
  */
 void ik_timer_init(void)
 {
 #if defined(IK_HAVE_XILTIMER)
-    /* Unlike the old standalone BSP's xtime_l.h, where XTime_GetTime lazily
-     * arms the global timer counter on its first call, libxiltimer's
-     * XTime_GetTime is a thin wrapper over a driver instance that must be
-     * brought up first.  Skipping this leaves the counter it reads never
-     * started, so every XTime_GetTime call returns the same value and every
-     * measured delta in this harness comes out as exactly zero - which is
-     * what happens without this call. */
-    XTimer_Init();
+    (void)XilSleepTimer_Init(&TimerInst);
+    usleep(1);
 #endif
 }
 
