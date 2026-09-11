@@ -118,8 +118,8 @@ static void init_platform_stub(void);
  * ik_vectors.h would produce a clean-looking run whose max/med is wrong by
  * about 4x.
  */
-#if !defined(IK_VECTORS_HAS_MODEL_ITERS)
-#error "sw/src/ik_vectors.h is out of date - it predates ik_model_iters_tbl and the DLS tail poses. It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
+#if !defined(IK_VECTORS_VERSION) || IK_VECTORS_VERSION < 2
+#error "sw/src/ik_vectors.h is out of date - this harness needs version 2 (ik_qdls_tbl, ik_model_iters_tbl, DLS tail poses). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
 #endif
 
 /* DLS solver arguments.  These mirror IK_DLS_*_DEFAULT in
@@ -308,7 +308,7 @@ int main(void)
 #endif
 #if HAVE_DLS
     ik_dev_t  dls = { DLS_BASE };
-    samples_t s_dls_hw, s_dls_sw, s_dls_it;
+    samples_t s_dls_hw, s_dls_sw, s_dls_it, s_dls_sw_it;
 #endif
     ik_dev_t  matmul = { MATMUL_BASE };
     ik_dev_t  matinv = { MATINV_BASE };
@@ -363,10 +363,11 @@ int main(void)
     /* ---- correctness pass ---- */
     xil_printf("-- correctness (first 8 poses) --\r\n");
     for (int i = 0; i < 8 && i < IK_NVEC; i++) {
-        float pose[6], qg[6], q[6];
+        float pose[6], qg[6], qd[6], q[6];
         for (int j = 0; j < 6; j++) {
             pose[j] = ik_q2f(ik_pose_tbl[i][j]);
             qg[j]   = ik_q2f(ik_qgold_tbl[i][j]);
+            qd[j]   = ik_q2f(ik_qdls_tbl[i][j]);
         }
 #if HAVE_ANALYTIC
         int st = ik_analytic_solve(&analytic, pose, ik_cfg_tbl[i], q, NULL);
@@ -379,7 +380,12 @@ int main(void)
             for (int j = 0; j < 6; j++) seed[j] = ik_q2f(ik_seed_tbl[i][j]);
             int sd = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
                                   DLS_MAX_ITER, q, &it, NULL, NULL);
-            print_pose_result(i, ik_tag_tbl[i], sd, q, qg, it);
+            /* Against ik_qdls_tbl, not ik_qgold_tbl.  IK is multi-valued and
+             * the two solvers land on different branches by design - see the
+             * note on the tables in ik_vectors.h.  Checked against the
+             * analytic branch this column read ~3.1 rad of error on poses the
+             * solver had in fact solved to within 1e-4 m. */
+            print_pose_result(i, ik_tag_tbl[i], sd, q, qd, it);
             /* The double-precision model's count for the same pose.  A
              * systematic gap means quantisation moved the convergence path,
              * which is a result rather than a failure - so report it, do not
@@ -420,6 +426,7 @@ int main(void)
     samp_reset(&s_dls_hw);
     samp_reset(&s_dls_sw);
     samp_reset(&s_dls_it);
+    samp_reset(&s_dls_sw_it);
     for (int i = 0; i < IK_NVEC; i++) {
         float pose[6], seed[6], q[6];
         uint32_t c;
@@ -434,11 +441,17 @@ int main(void)
         samp_add(&s_dls_hw, c);
         samp_add(&s_dls_it, (uint32_t)it);
 
+        int it_sw = 0;
         uint64_t t0 = ik_timer_read();
         ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
-                        q, NULL, NULL);
+                        q, &it_sw, NULL);
         uint64_t t1 = ik_timer_read();
         samp_add(&s_dls_sw, (uint32_t)(t1 - t0));
+        /* The PS runs the same algorithm in double, so its iteration count is
+         * NOT automatically the PL's: quantisation moves where the residual
+         * crosses tol.  Without this the two latency rows look like a clean
+         * PL-vs-PS comparison when they may be solving to different depths. */
+        samp_add(&s_dls_sw_it, (uint32_t)it_sw);
     }
 #endif
 
@@ -473,7 +486,8 @@ int main(void)
 #if HAVE_DLS
     samp_report("dls       (PL)", &s_dls_hw);
     samp_report("dls       (PS, double)", &s_dls_sw);
-    samp_report_raw("dls       iterations", &s_dls_it);
+    samp_report_raw("dls       iters (PL)", &s_dls_it);
+    samp_report_raw("dls       iters (PS, double)", &s_dls_sw_it);
 #else
     xil_printf("  ik_dls               not in this bitstream (skipped)\r\n");
 #endif

@@ -236,8 +236,12 @@ def gen_c_header(n=48, path=None):
 /* Bumped whenever this file grows something a consumer might require.  It is
  * gitignored - reproduced by model/gen_vectors.py rather than checked in - so
  * pulling a commit updates the code that reads it but not the file itself,
- * and the resulting error is otherwise just an undeclared identifier. */
-#define IK_VECTORS_HAS_MODEL_ITERS 1
+ * and the resulting error is otherwise just an undeclared identifier.
+ *
+ *   1  ik_model_iters_tbl, DLS tail poses
+ *   2  ik_qdls_tbl
+ */
+#define IK_VECTORS_VERSION 2
 
 #define IK_NVEC %d
 
@@ -251,8 +255,20 @@ static const int32_t ik_seed_tbl[IK_NVEC][6] = {
 %s
 };
 
-/* Reference joint solution from the floating-point model. */
+/* Reference joint solution from the floating-point model's ANALYTIC solver,
+ * branch (+,+,+) - i.e. what ik_cfg_tbl selects.  Compare ik_analytic_kernel
+ * against this. */
 static const int32_t ik_qgold_tbl[IK_NVEC][6] = {
+%s
+};
+
+/* Reference joint solution from the floating-point model's DLS solver, run
+ * from ik_seed_tbl.  Compare ik_dls_kernel against THIS, not against
+ * ik_qgold_tbl: IK is multi-valued, and the two solvers legitimately land on
+ * different branches - often ~pi apart in a wrist joint - while both solve
+ * the pose to within tolerance.  A DLS result checked against the analytic
+ * branch measures which solution was found, not how accurately. */
+static const int32_t ik_qdls_tbl[IK_NVEC][6] = {
 %s
 };
 
@@ -278,6 +294,7 @@ static const uint8_t ik_model_iters_tbl[IK_NVEC] = {
             c_rows("pose"),
             c_rows("seed"),
             c_rows("qgold"),
+            c_rows("qdls"),
             "    " + ", ".join("%d" % r["cfg"] for r in recs),
             "\n".join('    "%s",' % r["tag"] for r in recs),
             "    " + ", ".join("%d" % r["iters"] for r in recs)))
@@ -349,11 +366,16 @@ def _mk_rec(q, T, tag, seed=None):
         qs = q
     if seed is None:
         seed = q_arr(q + rng.uniform(-0.25, 0.25, size=6))
-    # Carried into the header so the harness can report what the
-    # double-precision model needed alongside what the kernel actually took.
-    _, iters, _, _ = M.ik_dls(Tq, seed, lam=LAMBDA, max_iter=MAX_ITER, tol=TOL)
-    return {"pose": pose, "seed": seed, "qgold": qs, "iters": int(iters),
-            "cfg": 1 | 2 | 4, "tag": tag}
+    # The model's own DLS result from this seed, and what it cost.
+    #
+    # qdls is NOT qgold, and the difference is the point.  IK is multi-valued:
+    # qgold is the analytic (+,+,+) branch, while DLS converges to whichever
+    # branch its seed is nearest, so the two routinely differ by ~pi in a
+    # wrist joint while both solve the pose exactly.  Comparing a DLS result
+    # against qgold measures branch choice, not accuracy.
+    qd, iters, _, _ = M.ik_dls(Tq, seed, lam=LAMBDA, max_iter=MAX_ITER, tol=TOL)
+    return {"pose": pose, "seed": seed, "qgold": qs, "qdls": q_arr(qd),
+            "iters": int(iters), "cfg": 1 | 2 | 4, "tag": tag}
 
 
 def write(name, lines):
