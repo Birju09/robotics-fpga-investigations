@@ -3,6 +3,7 @@
 #include "ik_regmap.h"
 #include "xil_io.h"
 #include "xparameters.h"
+#include "unistd.h"
 
 //
 //! XTime_GetTime/COUNTS_PER_SECOND moved house.  They were in the standalone
