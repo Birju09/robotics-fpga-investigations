@@ -47,6 +47,17 @@ int main() {
     TbStats res_st("spd::solve (residual Au-b)");
     TbStats agr_st("spd::solve (vs mi::invert)");
 
+    //! solve_n() must be BIT-identical to one solve() per right-hand side,
+    //! not merely close: it is the same factorisation and the same
+    //! substitution, so any difference at all means the split changed the
+    //! arithmetic, which would silently move the DLS trajectory. Counted
+    //! exactly rather than run through TbStats, which is tolerance-based.
+    long nrhs_checked = 0, nrhs_bad = 0;
+    //! Second right-hand side is deliberately unrelated to the first (and to
+    //! b's arithmetic ramp), so a substitute() that ignored its argument and
+    //! reused stale state would show up.
+    long fact_checked = 0, fact_bad = 0;
+
     //! TOL_RES: Q16.16 LSB is 1.5e-5; a 6-term reduction rounding once per
     //! store can't beat a few LSBs. TOL_AGR is looser because spd::solve and
     //! mi::invert reciprocate/multiply at different points and disagree in
@@ -129,6 +140,49 @@ int main() {
                         }
                         agr_st.note(worst_agr, TOL_AGR);
                     }
+
+                    //! ---- solve_n() == solve(), bit for bit ----
+                    ik_real_t b2[IK_MAT_MAX], u2[IK_MAT_MAX];
+                    for (int i = 0; i < IK_MAT_MAX; i++) {
+                        double v = (i < n) ? (0.37 - 0.21 * (double)((i * 5 + 3) % 7))
+                                           : 0.0;
+                        b2[i] = (ik_real_t)v;
+                    }
+                    if (spd::solve(A, n, b2, u2) != IK_OK)
+                        return 1;
+
+                    ik_real_t B[IK_SPD_NRHS][IK_MAT_MAX];
+                    ik_real_t U[IK_SPD_NRHS][IK_MAT_MAX];
+                    for (int i = 0; i < IK_MAT_MAX; i++) {
+                        B[0][i] = b[i];
+                        B[1][i] = b2[i];
+                    }
+                    if (spd::solve_n(A, n, B, U) != IK_OK)
+                        return 1;
+
+                    for (int i = 0; i < IK_MAT_MAX; i++) {
+                        nrhs_checked += 2;
+                        if (!(U[0][i] == u[i]))
+                            nrhs_bad++;
+                        if (!(U[1][i] == u2[i]))
+                            nrhs_bad++;
+                    }
+
+                    //! ---- factor() + substitute() == solve() ----
+                    //! The primitives reached directly, to prove solve() adds
+                    //! nothing but the two ARRAY_PARTITION declarations.
+                    ik_work_t L[IK_MAT_MAX][IK_MAT_MAX];
+                    ik_work_t invD[IK_MAT_MAX];
+                    ik_real_t u3[IK_MAT_MAX];
+                    if (spd::factor(A, n, L, invD) != IK_OK)
+                        return 1;
+                    spd::substitute(L, invD, n, b, u3);
+                    for (int i = 0; i < IK_MAT_MAX; i++) {
+                        fact_checked++;
+                        if (!(u3[i] == u[i]))
+                            fact_bad++;
+                    }
+
                     cases++;
                 }
             }
@@ -202,6 +256,16 @@ int main() {
         std::printf("      %ld results off by more than 1 LSB\n", recip_bad);
         rc = 1;
     }
+    std::printf("  %-28s %ld values, %ld differ  %s\n",
+                "factor+substitute == solve", fact_checked, fact_bad,
+                fact_bad ? "FAIL" : "pass");
+    if (fact_bad)
+        rc = 1;
+    std::printf("  %-28s %ld values, %ld differ  %s\n",
+                "solve_n == solve (2 rhs)", nrhs_checked, nrhs_bad,
+                nrhs_bad ? "FAIL" : "pass");
+    if (nrhs_bad)
+        rc = 1;
     std::printf("  %d systems, n=2..6, 3 damping factors, 3 scalings\n", cases);
     return rc;
 }

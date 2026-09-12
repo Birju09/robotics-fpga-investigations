@@ -23,6 +23,14 @@
 
 #define IK_MAT_MAX 6  //! max dimension handled by matmul / matinv
 
+//! Right-hand sides spd::solve_n() carries against one factorisation. Two,
+//! because iks::dls() needs A^-1 e (task) and A^-1 (J z) (nullspace
+//! projection) per iteration - see docs/collision_aware_ik.md §5. Raising
+//! this costs one substitution pass each, unconditionally: solve_n()
+//! substitutes every right-hand side whether or not the caller wants it, so
+//! that latency does not depend on how many are live.
+#define IK_SPD_NRHS 2
+
 //! Pivot magnitude below which mat_inv declares the matrix singular.
 //! 1e-4 is chosen so the reciprocal (1e4) still fits Q16.16 with margin, while
 //! staying below the smallest eigenvalue that damping guarantees
