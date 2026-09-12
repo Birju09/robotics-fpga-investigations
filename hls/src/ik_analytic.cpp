@@ -105,6 +105,7 @@ AN_R36_R:
             ik_acc_t acc = (ik_acc_t)0;
             for (int k = 0; k < 3; k++) {
                 acc += (ik_acc_t)(R03[k][i] * Rd[k][j]);  //! transpose of R03
+            }
             R36[i][j] = (ik_real_t)acc;
         }
     }
