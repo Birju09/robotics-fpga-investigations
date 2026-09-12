@@ -166,12 +166,17 @@ per-iteration cost, and made schedulable by capping `max_iter` (a runtime
 register: capping at 2 iterations pins the whole tracking workload at a hard
 35 µs, at zero engineering cost, degrading only when the loop is disturbed).
 
-**Not good.** Throughput parity with a general-purpose core at this problem
-size — the FPGA is not "faster IK," it is "IK with a bound on how slow it
-gets." The disturbed-case worst case is *bounded*, not *eliminated*: a step
-clamp (trust region) shrinks it but does not remove data dependence, and the
-closed-form solver that has none exists only for kinematically fortunate
-arms.
+**Not good.** Throughput is roughly on par with a general-purpose core at
+this problem size — the DLS kernel is only ~1.5× faster than the same
+algorithm on the Cortex-A9, which is not a compelling win once the extra
+engineering cost of an HLS/FPGA flow over just running the loop on the CPU
+is weighed in. The disturbed-case worst case is *bounded*, not *eliminated*:
+a step clamp (trust region) shrinks it but does not remove data dependence,
+and the closed-form solver that has none exists only for kinematically
+fortunate arms. The more realistic pitch is not "replace the CPU" but a
+low-power coprocessor: offload the IK solve to the PL, at a fraction of the
+A9's power draw, and free the CPU core for everything else in the control
+loop.
 
 ---
 
