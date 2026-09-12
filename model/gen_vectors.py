@@ -41,7 +41,7 @@ MAX_ITER = 64
 TRAJ_CENTRE = (0.40, 0.0)     # metres, in the base x-y plane
 TRAJ_Z = 0.15                 # tool-tip height above the base plane
 TRAJ_RADIUS = 0.20            # circumradius of the pentagon
-TRAJ_STEPS = 10               # samples per edge -> 5 * 10 = 50 poses
+TRAJ_STEPS = 100              # samples per edge -> 5 * 100 = 500 poses. Roughly 2.35mm per step
 # End-effector orientation at each vertex, degrees of yaw about the (vertical)
 # tool axis.  Interpolated linearly along each edge, so the tool reaches the
 # vertex already at that vertex's orientation and never turns discontinuously.
@@ -465,12 +465,13 @@ def _pentagon_traj():
     psi is TRAJ_YAW_DEG at each vertex - 0, 90, 0, 90, 0 degrees - and is
     interpolated linearly along the edge between them, so the tool arrives at
     each vertex already carrying that vertex's orientation and never turns
-    discontinuously.  At TRAJ_STEPS = 10 that is 9 degrees of yaw and about
-    12 mm of translation per sample, both of them servo-scale increments.
+    discontinuously.  At TRAJ_STEPS = 100 that is 0.9 degrees of yaw and about
+    2.4 mm of translation per sample, both of them servo-scale increments.
 
-    Expect this table to be almost flat: every pose converges in two
-    iterations, vertices included, because a smooth path warm-started from its
-    own predecessor never presents the solver with a large residual.  That is
+    Expect this table to be flat: every pose converges in two iterations,
+    vertices included, because a smooth path warm-started from its own
+    predecessor never presents the solver with a large residual.  Hardware
+    agrees at every one of the 500 samples.  That is
     the result, not a defect in the workload - it says the DLS solver behaves
     as a fixed-latency block while it is TRACKING, and that its unbounded
     iteration count only becomes a scheduling problem when the loop is

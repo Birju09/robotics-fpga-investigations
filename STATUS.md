@@ -4,16 +4,32 @@ Running log of what is built, what has been measured on hardware, and what is
 open. `README.md` is the stable description of the project; this file is the
 part that changes every build.
 
-Last updated after **retargeting the project at a PUMA 560**. Every hardware
-number in this file predates that change and was measured on the previous
-0.71 m arm; they are kept for the structural findings and for comparison, and
-each section says so. Nothing here has been re-measured on the new geometry.
+Last updated after the **second hardware run on the PUMA 560 geometry**
+(`run.log`, `ik_dls_kernel` alone, trust region enabled), which repeats
+Workload A unchanged and re-samples the trajectory at 100 points per edge
+instead of 10. The DLS numbers below are current. The analytic kernel has
+**not** been re-synthesised since the retarget and its figures still come from
+the previous 0.71 m arm; every such section says so.
 
-The change and its motivation are in README §2.1 and §4.5. In short: the
+The retarget and its motivation are in README §2.1 and §4.5. In short: the
 previous arm had no lateral shoulder offset, so the wrist centre could sit
 exactly on the joint-1 axis, where theta1 is undefined and `atan2(0, 0)`
-returned zero instead of failing. PUMA's `d3 = 149.09 mm` removes that by
+returned zero instead of failing. PUMA's `d3 = 150.05 mm` removes that by
 construction.
+
+What the finer sampling changed, and it changed a lot: the tracking case is now
+**2 iterations at all 500 samples** with a total latency spread of 0.51%, and
+chain drift fell from 1922 to **183 urad** despite ten times as many solves per
+lap. The two sampling rates together are more informative than either alone —
+they show the tracking case's flatness is a function of step size, and that
+drift is bounded by the convergence tolerance rather than accumulated. Both are
+reported below.
+
+Two things still want attention before anything is built on them: the worst
+pose takes 22 iterations where the model says 12 (in *both* the PL and PS
+columns, and identically in both runs, so it is neither quantisation nor
+noise), and the per-iteration cost rose 7.7% across the retarget with no change
+to the DLS inner loop. Both are under Open items.
 
 ---
 
@@ -25,10 +41,10 @@ construction.
 | URDF -> DH converter (`model/urdf_to_dh.py`) | passing — 4 round-trip cases to 1e-15, 3 malformed inputs rejected |
 | golden model (`model/validate.py`) | passing — 32,000 branch solutions, worst pose error 1.9e-13 |
 | host regression (`make -C hls host`) | passing — all four kernels, float build, new geometry |
-| **all hardware numbers below** | **stale — measured on the previous arm** |
-| `ik_analytic_kernel` | **on hardware**, 80 MHz, measured (pre-trust-region bitstream) |
-| `ik_dls_kernel` | **on hardware**, 80 MHz, measured with the trust region (`run.log`) |
-| pentagon trajectory workload | **on hardware**, 80 MHz, measured (`run.log`) |
+| `ik_dls_kernel` | **on hardware, PUMA geometry**, trust region on, both workloads, Workload A run twice (`run.log`) |
+| pentagon trajectory workload | **on hardware, PUMA geometry**, at 100 and at 10 samples/edge (`run.log`) |
+| `ik_analytic_kernel` | **stale** — previous arm, pre-trust-region bitstream, not re-synthesised |
+| trust-region before/after comparison | **stale** — no unclamped run exists on this geometry |
 | `mat_mul_kernel` / `mat_inv_kernel` | synthesise and package; not in either measured bitstream |
 | both IK kernels in one bitstream | does not fit — ~345 DSP against 220 |
 
@@ -40,7 +56,7 @@ and `sw/src/main.c` compiles out whatever is absent.
 
 ## Hardware results
 
-### `ik_analytic_kernel`, 80 MHz, 48 poses
+### `ik_analytic_kernel`, 80 MHz, 48 poses — **previous arm, stale**
 
 | path | min | med | p95 | max | max/med |
 |---|---|---|---|---|---|
@@ -48,138 +64,199 @@ and `sw/src/main.c` compiles out whatever is absent.
 | PS (double) | 32446 ns | 32612 ns | 32732 ns | 37923 ns | 1.16 |
 
 Constant to the resolution of the timer. That is the control: the spread below
-is the solver, not the bus, not the timer, not the PS.
+is the solver, not the bus, not the timer, not the PS. That conclusion is about
+the harness and survives the change of arm; the absolute numbers do not.
 
-### `ik_dls_kernel`, 80 MHz, trust region enabled, 48-pose table (`run.log`)
-
-| path | min | med | p95 | max | mean | max/med |
-|---|---|---|---|---|---|---|
-| PL | 48535 ns | 64495 ns | 160692 ns | 513320 ns | 89236 ns | **7.95** |
-| PS (double) | 79064 ns | 106864 ns | 298227 ns | 871824 ns | 149556 ns | 8.15 |
-| PL iterations | 3 | 4 | 10 | 32 | 5 | 8.00 |
-| PS iterations | 3 | 4 | 11 | 32 | 5 | 8.00 |
-
-### `ik_dls_kernel`, 80 MHz, pentagon trajectory, 50 samples (`run.log`)
+### `ik_dls_kernel`, trust region enabled, 48-pose table (`run.log`, PUMA)
 
 | path | min | med | p95 | max | mean | max/med |
 |---|---|---|---|---|---|---|
-| PL | 32390 ns | 32421 ns | 32464 ns | 32473 ns | 32418 ns | **1.00** |
-| PS (double) | 51560 ns | 52150 ns | 52440 ns | 52566 ns | 52006 ns | 1.00 |
+| PL | 52144 ns | 69378 ns | 190372 ns | 380086 ns | 89600 ns | **5.47** |
+| PS (double) | 78252 ns | 105356 ns | 321166 ns | 591052 ns | 137661 ns | 5.60 |
+| PL iterations | 3 | 4 | 11 | 22 | 5 | 5.50 |
+| PS iterations | 3 | 4 | 12 | 22 | 5 | 5.50 |
+
+Correctness on the first eight poses: all `status=0`, worst joint delta 30–213
+µrad, 3–4 iterations.
+
+**This table has now been measured twice in the same bitstream, in separate
+sessions**, which is the first repeatability figure the project has:
+
+| | min | med | p95 | max | mean |
+|---|---|---|---|---|---|
+| run 1 | 52126 | 69560 | 190298 | 380153 | 89612 |
+| run 2 | 52144 | 69378 | 190372 | 380086 | 89600 |
+| delta | +0.03% | −0.26% | +0.04% | −0.02% | −0.01% |
+
+Iteration quantiles are identical (3 / 4 / 11 / 22 PL, 3 / 4 / 12 / 22 PS), the
+22-iteration outlier included, and the eight correctness lines are byte-for-byte
+the same. So the kernel is deterministic over its inputs, the ~0.3% is the
+instrument, and the 22-iteration pose is a real property of the kernel rather
+than a marginal solve that could land either way. That last point matters: it
+was previously written off as "one marginal solve"; it is not marginal, it is
+repeatable and unexplained.
+
+### `ik_dls_kernel`, pentagon trajectory, 500 samples at 100/edge (`run.log`)
+
+| path | min | med | p95 | max | mean | max/med |
+|---|---|---|---|---|---|---|
+| PL | 34913 ns | 35003 ns | 35052 ns | 35092 ns | 35003 ns | **1.00** |
+| PS (double) | 51193 ns | 51307 ns | 51427 ns | 51720 ns | 51316 ns | 1.00 |
 | PL iterations | 2 | 2 | 2 | 2 | 2 | 1.00 |
 | PS iterations | 2 | 2 | 2 | 2 | 2 | 1.00 |
 
-Four observations, in decreasing order of how much they change the argument:
+Vertex drift, samples 0/100/200/300/400: 91, 45, 45, 76, 91 µrad, all at 2
+iterations. `ik_traj_iters_tbl` is 2 at all 500 entries, so kernel and model
+agree at every sample.
 
-- **The tracking case is flat.** Every one of the 50 samples converges in two
-  iterations, and the latency spread across the lap is 83 ns on 32.4 µs — the
-  resolution of the measurement, not a property of the solver. Set against 7.95
-  on the 48-pose table, this is the quantitative form of the claim the project
-  has been making qualitatively: DLS is a fixed-latency block while it is
-  following a path, and its data-dependent latency is a property of the
-  disturbed case, not of the algorithm as deployed.
-- **The chained fixed-point solve is stable.** Cumulative drift of the hardware
-  chain from the model's chain peaks at **152 µrad at sample 28** and falls back
-  to 76 µrad by sample 40. Q16.16's LSB is 15.3 µrad, so the peak is ten LSB, it
-  is not monotone, and it does not accumulate: each sample re-converges to
-  `tol`, which re-anchors the chain to the commanded pose every control period.
-  On a 0.5 m lever, 152 µrad is ~76 µm of tool position. This was the open
-  question the trajectory table was added to answer.
-- **Quantisation did not move the trajectory's convergence path.** PL and PS
-  iteration counts are identical at every sample, and no `(model needed N)`
-  line was printed.
-- **PL is 1.61× faster than the A9** on the trajectory and 1.66× on the 48-pose
-  table, against 3.0× for the analytic kernel. An iterative solver spends its
-  time in a loop the PL runs at 80 MHz and the A9 at 667 MHz; the PL wins on
-  parallelism per iteration, and at this size that is a narrow win. The case for
-  the PL path here is determinism, not throughput.
+### The two sampling rates, compared
 
-### Effect of the trust region, measured
+The preceding run drove the same pentagon at 10 samples per edge. Same arm,
+same path, same bitstream, same kernel — only the step size differs:
 
-The same 48 poses, before and after, both at 80 MHz. The pose set is frozen by
-construction (`_find_dls_tail()` selects on the unclamped solver on purpose), so
-this is the same workload twice:
+| | 10/edge (50 samples) | 100/edge (500 samples) |
+|---|---|---|
+| travel per sample | 23.5 mm | 2.35 mm |
+| at a 1 kHz control period | 23.5 m/s | 2.35 m/s |
+| iterations | 2 or 3, ~half each | **2 at every sample** |
+| PL latency | 34944–52215 ns | 34913–35092 ns |
+| `max/min` | 1.49 | **1.005** |
+| peak chain drift | 1922 µrad | **183 µrad** |
+
+Five observations, in decreasing order of how much they change the argument:
+
+- **The tracking case is genuinely flat at servo-realistic step sizes, and the
+  qualifier is the finding.** 500 solves, 2 iterations each, 179 ns of spread
+  on 35 µs. Against 5.47 and 3–22 iterations on the 48-pose table, that is the
+  project's central claim in its strongest measured form. But at 23.5 mm/step
+  the same lap needs 2 or 3, so flatness is a property of the *sampling rate*,
+  not of DLS. Note also which of the two rates is physical: 23.5 mm per 1 kHz
+  period is 23.5 m/s, which no PUMA does. The coarse run is a stress case, not
+  a slower-servo case.
+- **Chain drift does not accumulate with the number of solves.** Ten times more
+  solves per lap produced ten and a half times *less* drift: 1922 → 183 µrad
+  (~126 → ~12 Q16.16 LSB, ~1.7 mm → ~160 µm at 0.86 m reach). What sets it is
+  per-solve difficulty. Each sample stops as soon as `‖e‖ < tol`, so the two
+  chains land somewhere inside the same tolerance ball rather than at the same
+  point, and the separation grows with warm-start distance. Coarse stepping
+  puts them near opposite sides of the ball; fine stepping keeps them near its
+  centre. Drift is bounded by `tol`, not integrated along the path — which is
+  what re-converging every period buys, now measured across a 10× sweep instead
+  of argued from one lap.
+- **This also mostly answers the previous run's open item.** 1922 µrad against
+  the old arm's 152 µrad had three confounded causes (arm scale, path scale,
+  path conditioning). Holding all three fixed and varying only the sampling
+  interval reproduces most of the effect, so sampling interval dominates and
+  the change of manipulator does not. Not a controlled cross-arm comparison,
+  and none is available without rebuilding for the old geometry — but enough to
+  stop treating the retarget as the suspect.
+- **Quantisation did not move the convergence path anywhere.** PL and PS
+  iteration counts agree at every quantile in both trajectory runs, and no
+  `(model needed N)` line was printed.
+- **PL is 1.47× faster than the A9** on the trajectory and 1.52× on the 48-pose
+  table, against 3.0× for the analytic kernel on the old arm. An iterative
+  solver spends its time in a loop the PL runs at 80 MHz and the A9 at 667 MHz;
+  the PL wins on parallelism per iteration, and at this size that is a narrow
+  win. The case for the PL path here is determinism, not throughput.
+
+### Effect of the trust region — **previous arm, stale**
+
+`run.log` confirms the clamp is live in the current build (`step_max = 1500
+milli-rad`), but there is no unclamped run on PUMA geometry, so the before/after
+below is the old arm's and is kept only for the reasoning:
 
 | | med | p95 | max | max/med |
 |---|---|---|---|---|
-| unclamped (previous `run.log`) | 64036 ns / 4 it | 255470 ns / 16 it | 351175 ns / 22 it | 5.48 |
+| unclamped | 64036 ns / 4 it | 255470 ns / 16 it | 351175 ns / 22 it | 5.48 |
 | trust region 1.5 rad | 64495 ns / 4 it | **160692 ns / 10 it** | **513320 ns / 32 it** | 7.95 |
 
-The prediction from the model was med 4, p95 11, max 32, `max/med` 8.00. The
-median (unchanged, +0.7%) and the p95 (11 predicted, 10 measured — the kernel's
-`err_sq < tol_sq` test crossing one iteration early, as documented below) match
-closely. **The maximum does not.** The model expected 32 iterations on the worst
-pose in both configurations; the hardware measured 22 unclamped and 32 clamped.
-
-So `max/med` rising 5.48 → 7.95 is not the clamp failing to help — p95 latency
-fell 37% and that is where a scheduler lives — but it is also not the "maximum
-unchanged" the model predicted. The honest reading is that this table's extreme
-is one pose, that pose is marginal (32 of a 64 cap), and the iteration count of
-a marginal solve is not reproducible between double and Q16.16. `max/med` on
-n=48 is therefore a statistic with one sample behind it. See Open items.
+There, p95 latency fell 37% — which is where a scheduler lives — while the
+maximum went 22 → 32 against a model that predicted 32 in both configurations.
+That discrepancy was never resolved before the arm changed. Re-establishing the
+clamp's effect on PUMA costs a re-run, not a re-synthesis: `IK_DLS_STEP_MAX` is
+a runtime AXI register, so setting it beyond the joint range disables the clamp
+in the existing bitstream.
 
 ---
 
 ## Diagnosis: where the spread comes from
 
-The trajectory workload settles the pairing question directly. All 50 of its
-samples take exactly two iterations, so its latency needs no rank-matching, and
-it supplies a clean two-iteration point to anchor against the 48-pose table's
-32-iteration extreme. Fitting `a + b·iterations` through those two points alone:
+Run 1 gave a two-point fit through its trajectory (2 iterations) and its
+48-pose extreme (22 iterations), with no least-squares step:
 
 ```
-latency_ns  =  361  +  16030 * iterations
+latency_ns  =  423  +  17260 * iterations
 ```
 
-i.e. ~1282 PL cycles per iteration at 80 MHz on a fixed overhead of **361 ns**.
-Every other measured row follows from it without further fitting:
+i.e. ~1381 PL cycles per iteration at 80 MHz on a fixed overhead of **423 ns**.
+**Run 2 was not refitted.** Every row below is that relation predicting a
+measurement taken in a different session:
 
 | row | iters | predicted | measured | error |
 |---|---|---|---|---|
-| 48-pose min | 3 | 48451 ns | 48535 ns | +0.17% |
-| 48-pose med | 4 | 64481 ns | 64495 ns | +0.02% |
-| 48-pose p95 | 10 | 160661 ns | 160692 ns | +0.02% |
-| 48-pose max | 32 | 513320 ns | 513320 ns | 0.00% |
-| trajectory (all 50) | 2 | 32421 ns | 32390–32473 ns | ±0.16% |
+| trajectory, all 500 | 2 | 34943 ns | 34913–35092 ns | +0.17% at the median |
+| 48-pose min | 3 | 52203 ns | 52144 ns | −0.11% |
+| 48-pose med | 4 | 69463 ns | 69378 ns | −0.12% |
+| 48-pose p95 | 11 | 190283 ns | 190372 ns | +0.05% |
+| 48-pose max | 22 | 380143 ns | 380086 ns | −0.01% |
 
-The harness's own `per iter` rows agree to within 3 ns: `(361 + 2b)/2 = 16210`
-against 16209 measured on the trajectory, `(361 + 4b)/4 = 16120` against 16123
-at the 48-pose median, `(361 + 32b)/32 = 16041` against 16040 at its minimum.
+Nothing worse than 0.17%, across an 11× range of iteration counts and two
+sessions. An ordinary least-squares refit to run 2's five points returns
+`413 + 17260·k` — the slope recovered to better than 0.01%, the intercept to
+2.4%. So 17260 ns/iteration is a reproducible constant of this bitstream, not
+a curve-fitting artefact.
 
-**That last set is worth reading carefully, because it looks like a
-contradiction and is not.** The trajectory's per-iteration cost (16209 ns) reads
-*higher* than the 48-pose table's (16123 ns), which would suggest its iterations
-are more expensive. They are not: the difference is entirely the 361 ns fixed
-overhead amortised over two iterations instead of four. The 48-pose table's own
-per-iteration *minimum*, 16040 ns, belongs to its 32-iteration pose, where the
-overhead nearly vanishes. Nothing inside an iteration is data-dependent, which
-is precisely what the per-iteration row was added to establish.
+The harness's own `per iter` rows agree: `(423 + 22b)/22 = 17279` against 17273
+measured as the 48-pose per-iteration minimum, and `(423 + 4b)/4 = 17366`
+against 17372 at its median.
+
+**The per-iteration rows look like a contradiction and are not.** The
+trajectory's per-iteration cost (17501 ns) reads *higher* than the 48-pose
+table's median (17372 ns), which would suggest its iterations are more
+expensive. They are not: the difference is the 423 ns fixed overhead amortised
+over two iterations instead of four. The 48-pose table's per-iteration
+*minimum*, 17273 ns, belongs to its 22-iteration pose, where the overhead
+nearly vanishes. Nothing inside an iteration is data-dependent, which is what
+the per-iteration row was added to establish.
 
 Consequences:
 
 - The AXI4-Lite transaction overhead — a real fraction of the analytic kernel's
-  10.7 µs — is **0.6% of a median DLS solve, 1.1% of a trajectory sample and
-  0.07% of the worst case.** There is nothing to win on the bus for this kernel.
-- Every loop inside an iteration has a fixed trip count, and the measurement
-  confirms it across a 16× range of iteration counts: the II choices in
-  `ik_config.hpp`, the rolled CORDIC and the padded `spd::solve()` cost the same
-  cycles every time.
+  10.7 µs — is **0.6% of a median DLS solve, 1.2% of a trajectory sample and
+  0.1% of the worst case.** There is nothing to win on the bus for this kernel.
+- Every loop inside an iteration has a fixed trip count, confirmed across an
+  11× range of iteration counts and reproduced across two sessions: the II
+  choices in `ik_config.hpp`, the rolled CORDIC and the padded `spd::solve()`
+  cost the same cycles every time.
 - **All of the spread is iteration count.** On the 48-pose table that spread
-  (3 → 32) is partly by construction: `gen_vectors.py` selects a quarter of the
+  (3 → 22) is partly by construction: `gen_vectors.py` selects a quarter of the
   table on the model's DLS iteration count in [8, 32], seeded ±1.2 rad away.
   Without that block the table converged in 3–5 every time and reported
   `max/med` = 1.77.
 
-The two workloads therefore bracket the answer rather than competing:
-**7.95 is the disturbed case and 1.00 is the tracking case**, both measured on
-the same kernel, in the same bitstream, in the same run. The 48-pose table is
-built to find the tail on purpose, because the tail decides schedulability; the
-trajectory is what the machine does the rest of the time.
+**The slope moved and the cause is not established.** The same fit on the
+previous arm gave `361 + 16030·k`, so per-iteration cost is up 7.7% at
+1381 cycles against 1282. The DLS inner loop was not touched by the retarget —
+only the values of the DH constants changed, and those are compile-time
+constants that should not alter the schedule. A clock difference would have to
+be 74.3 MHz to explain it, which `build_vivado.tcl` does not offer. The likely
+answer is simply a different synthesis run with a different schedule, but it
+has not been checked against `make -C hls reports`. Until it is, absolute
+latencies here are comparable among themselves and not against the analytic or
+unclamped tables.
 
 ---
 
 ## Done: the DLS trust region
 
-`iks::dls()` now bounds `|dq|∞` per iteration (`IK_DLS_STEP_MAX_DEFAULT`,
+**All numbers in this section were derived on the previous 0.71 m arm and its
+pose table.** The clamp itself is unchanged and enabled in the current build;
+the *sizing* of it — the 1.5 rad radius and every figure justifying it — has
+not been revisited on PUMA geometry, whose joints span a different range. The
+reasoning is what is worth keeping here, and the design log in `ik_config.hpp`
+records how it was arrived at.
+
+`iks::dls()` bounds `|dq|∞` per iteration (`IK_DLS_STEP_MAX_DEFAULT`,
 1.5 rad, a runtime AXI register like `lambda` and `tol`). The full design log —
 radius sweep, the shift-vs-exact-scale decision, and the adaptive-λ result —
 is in the trust region block of `hls/include/ik_config.hpp`;
@@ -196,7 +273,7 @@ is bit-comparable but unbuilt):
 
 | | conv | med | p95 | max | mean | p95 latency |
 |---|---|---|---|---|---|---|
-| unclamped (what `run.log` ran) | 48/48 | 4 | 18 | 32 | 6.40 | 287 µs |
+| unclamped | 48/48 | 4 | 18 | 32 | 6.40 | 287 µs |
 | trust region 1.5 rad | 48/48 | 4 | **11** | 32 | 5.46 | **176 µs** |
 
 Over ten independently drawn tables (480 poses), p95 goes 18 → 12, mean
@@ -286,11 +363,14 @@ them changes `max/med`:
 
 ### A. Fewer iterations — attacks the ratio
 
-**A1. Step clamping (trust region).** **Done and measured on hardware** — see
-above. p95 16 → 10 iterations and p95 latency 255 → 161 µs on the shipped table;
-deadline misses halved over ten model tables. The maximum went the other way
-(22 → 32 iterations), which the model did not predict and which is discussed
-above.
+**A1. Step clamping (trust region).** **Built, shipped, and measured — but only
+on the previous arm.** There it took p95 16 → 10 iterations and p95 latency
+255 → 161 µs, with deadline misses halved over ten model tables, while the
+maximum went the other way (22 → 32 iterations) against a model that predicted
+no change. The clamp is enabled in the current PUMA bitstream (`step_max = 1500
+milli-rad` in `run.log`) but its *effect* on that geometry is unmeasured. A
+re-run with `IK_DLS_STEP_MAX` written beyond the joint range gives the
+unclamped arm of the comparison without a re-synthesis; see Recommended order.
 
 **A2. Adaptive λ (Levenberg–Marquardt).** **Measured, rejected** — see above. A
 rejected step costs a full iteration in this architecture, which is fatal to
@@ -313,18 +393,29 @@ exists to make. Note it as the hybrid-architecture answer and leave it.
 pentagon trajectory table (`ik_vectors.h` version 4) and the trajectory section
 of `sw/src/main.c`. It does not improve the solver; it quantifies the gap
 between the worst-case characterisation above and the operating case, and the
-answer is **7.95× disturbed against 1.00× tracking, at 2 iterations flat**. The
-chain is fed the kernel's own previous output rather than a table lookup, so the
-drift figure above is a second result from the same run.
+answer is **52.1–380.1 µs and 3–22 iterations disturbed, against 34.91–35.09 µs
+and 2 iterations throughout while tracking**. The chain is fed the kernel's own
+previous output rather than a table lookup, so the drift figure above is a
+second result from the same run. Running it at two sampling rates turned out to
+be worth more than either rate alone — see the comparison table above.
 
 **A6. Cap `max_iter` to the deadline.** *Zero engineering cost — it is already a
-runtime register.* At the measured 16.03 µs per iteration:
+runtime register.* At the measured 17.26 µs per iteration:
 
 | budget | `max_iter` | notes |
 |---|---|---|
-| 1.02 ms | 64 (current default) | exceeds a 1 kHz period outright |
-| 250 µs | 15 | ~5–10% of this pose table returns `IK_ERR_NO_CONV` |
-| 100 µs | 6 | bounded hard; the tail poses return best-effort |
+| 1.11 ms | 64 (current default) | exceeds a 1 kHz period outright |
+| 250 µs | 14 | no pose in the model's table exceeds 12; the hardware's single 22-iteration pose does |
+| 100 µs | 5 | 11 of 48 poses (23%) exceed 5 in the model; the tail returns best-effort |
+| **35 µs** | **2** | never fires anywhere on the 100/edge trajectory; 48 of 48 poses truncated |
+
+The last row is the one worth noticing, and the finer sampling is what makes it
+interesting. At 100 samples per edge the tracking workload never exceeds two
+iterations, so a `max_iter` of 2 caps the *whole system* at 35 µs — a hard,
+fixed, sub-40 µs latency — at zero cost while tracking, degrading only when the
+loop is disturbed. That is the project's argument reduced to a single register
+write. At 10 samples per edge the same cap would fire on roughly half the lap,
+which is precisely why the sampling rate has to be quoted with the claim.
 
 This does not make the solver faster; it converts an unbounded latency into a
 bounded latency plus a bounded accuracy loss, which is the trade a scheduler can
@@ -334,16 +425,18 @@ cap — this is the shape of the real answer.
 
 ### B. Cheaper iterations — attacks the absolute numbers
 
-Budget per iteration, ~1282 measured cycles. From the last saved HLS report
-(`report2.log`, **stale** — see Open items):
+Budget per iteration, ~1381 measured cycles at 80 MHz. The block breakdown
+below comes from the last saved HLS report (`report2.log`, **stale** — see Open
+items) and sums to the *previous* 1282-cycle figure, so the shares are
+indicative and the 99-cycle difference is unattributed:
 
 | block | cycles | share |
 |---|---|---|
-| `fk_jacobian` | 590 | ~46% |
-| `spd::solve` | ~250 (est.) | ~20% |
-| `mm::multiply` ×2 | 83 | ~7% |
+| `fk_jacobian` | 590 | ~43% |
+| `spd::solve` | ~250 (est.) | ~18% |
+| `mm::multiply` ×2 | 83 | ~6% |
 | `pose_error` | 14 | ~1% |
-| staging / FSM | remainder | ~26% |
+| staging / FSM / unattributed | remainder | ~32% |
 
 **B1. `CORDIC_ITER` 24 → 18.** `fk_jacobian` is the biggest block and six
 serial rolled CORDIC calls are most of it. CORDIC resolves about one bit of
@@ -369,12 +462,18 @@ congestion is what ate the margin. A `--clk 100` run is one build and would be
 25% off every latency if it closes. Quote any result with its clock.
 
 **B4. Exploit the symmetry of JJᵀ.** `A = JJᵀ` is symmetric; 21 of the 36 dot
-products are redundant. Saves ~15 cycles of 1276. Real, but about 1% — do it
+products are redundant. Saves ~15 cycles of 1381. Real, but about 1% — do it
 for tidiness, not for latency.
+
+**B5. Account for the 7.7% slope increase** across the retarget (1282 → 1381
+cycles per iteration). This is not a tuning item, it is a "the design changed
+and nobody knows how" item, and it is worth more than B4 because it is the same
+order as B1's expected saving. `make -C hls reports` on the current tree
+against `report2.log` should settle it in one run and with no hardware.
 
 ### What is not worth doing
 
-Bus-side work. 361 ns of 64,495. The AXI4-Lite commentary in `main.c` and
+Bus-side work. 423 ns of 69,560. The AXI4-Lite commentary in `main.c` and
 `docs/timing_methodology.md` is correct for the analytic kernel and does not
 transfer to this one.
 
@@ -388,27 +487,50 @@ above.
 ~~6. A5 — warm-start row in the harness.~~ **Done** — the pentagon trajectory,
 numbers above.
 
-What remains, in order:
+~~4. Re-run DLS on the PUMA geometry.~~ **Done** — `run.log`, both workloads,
+full console capture, Workload A repeated.
 
-1. **Re-measure `ik_analytic_kernel`.** Its figures in this file are from the
-   pre-trust-region bitstream and predate the two-workload harness, so there is
-   no analytic row for the trajectory at all. It is one build (`--kernels
-   ik_analytic_kernel`) and it is what makes the fixed-latency-vs-data-dependent
-   comparison a comparison over the same two workloads rather than one.
-2. **Resolve the 22-vs-32 iteration discrepancy** on the worst pose (Open
-   items). Until it is understood, `max/med` on this table should be quoted with
-   the caveat that its numerator is a single marginal solve.
-3. **A6** — cap `max_iter` at the deadline, re-run, report the accuracy cost.
-   No build needed, and it composes with the trust region: the clamp halves the
-   number of poses that miss a 16-iteration deadline, and the cap bounds what
-   the rest cost. Now also worth quoting against the trajectory, where a cap of
-   3 would never fire.
-4. **B1** — `CORDIC_ITER` 18, validated through csim.
-5. **B2** — retry `IK_BATCH_CORDIC=1` on top of B1.
-6. **B3** — retry `--clk 100`.
+~~5. Decompose the chain drift.~~ **Mostly done** — the 10/edge and 100/edge
+runs isolate sampling interval as the dominant term. See the comparison table.
 
-Steps 2–3 change the distribution and need both tables re-run to be meaningful.
-Steps 4–6 are uniform scalings and can be verified from `make -C hls reports`
+What remains, in order. The first three cost re-runs of the *existing*
+bitstream and no synthesis, so they should all be done in one session:
+
+1. **A6 with `max_iter` = 2.** The finer sampling makes this the highest-value
+   run in the list: the tracking workload never exceeds two iterations, so a
+   cap of 2 pins the whole system at a hard 35 µs and fires only when the loop
+   is disturbed. Run it, and report what the 48 disturbed poses cost in
+   accuracy at that cap. Also worth capturing at 14 and 5 for the curve.
+2. **Unclamped re-run on this geometry.** Write `IK_DLS_STEP_MAX` beyond the
+   joint range and re-run both workloads. This is the missing arm of the
+   trust-region comparison, which is currently the previous manipulator's.
+3. **Instrument the one 22-iteration pose.** The model solves it in 12 and both
+   the PL and PS columns say 22, identically in both runs, so this is
+   kernel-vs-model and it is deterministic. Dump the per-iteration residual for
+   that pose from `main.c` and from `model/sweep_dls.py` and compare the two
+   sequences. Until this is understood, `max/med` = 5.47 should be quoted with
+   the caveat that its numerator is a solve the reference does not reproduce.
+
+Then, requiring builds:
+
+4. **Re-synthesise and re-measure `ik_analytic_kernel`.** It now carries a
+   different θ1 branch and a different wrist extraction, and its figures here
+   predate the two-workload harness, so there is no analytic row for the
+   trajectory at all. One build (`--kernels ik_analytic_kernel`), and it is what
+   makes the fixed-latency-vs-data-dependent comparison a comparison over the
+   same arm, the same two workloads, and comparable bitstreams.
+5. **B5** — reconcile the 7.7% per-iteration slope increase against
+   `make -C hls reports`. No hardware needed.
+6. **Bracket the step size at which tracking stops being flat.** The sweep has
+   two points an order of magnitude apart; 20, 30 and 50 samples per edge would
+   locate the crossover and turn "flat while tracking" into a statement with a
+   servo rate attached. Generator change and a re-run, no synthesis.
+7. **B1** — `CORDIC_ITER` 18, validated through csim.
+8. **B2** — retry `IK_BATCH_CORDIC=1` on top of B1.
+9. **B3** — retry `--clk 100`.
+
+Steps 1–3 change the distribution and need both tables re-run to be meaningful.
+Steps 7–9 are uniform scalings and can be verified from `make -C hls reports`
 before they ever reach hardware.
 
 ---
@@ -419,23 +541,44 @@ before they ever reach hardware.
   i.e. a build from before `spd::solve()` replaced `mi::invert()` on the DLS
   path. The `spd` row in the budget table above is therefore an estimate. Run
   `make -C hls reports` and replace it before tuning against it.
-- **`run.log` is a partial capture.** It begins mid-way through the trajectory
-  vertex lines, so the register-map check, the correctness pass and trajectory
-  vertices 0–3 are not in it. The register map was correct — `main.c` returns
-  before printing any timing row if `verify_regmap()` fails, so the latency
-  sections existing is proof — but the per-pose correctness output for this
-  bitstream was not saved. Capture the whole console next run.
-- **The worst pose took 22 iterations unclamped and 32 clamped**, where the
-  model predicted 32 in both cases. A trust region cannot make a solve take
-  *more* iterations in general — it can, on a pose where the unclamped full
-  Newton step happened to jump straight into the basin — but this is one pose at
-  the edge of the 64 cap, and it alone sets `max/med` for the whole table. Worth
-  reproducing in `model/sweep_dls.py` at that pose specifically, comparing the
-  clamped and unclamped step sequences, before any weight is put on 7.95 as a
-  worst case. It is also the strongest argument yet for the n=48 caution below.
-- **`ik_analytic_kernel` has not been run under the two-workload harness.** Its
-  numbers here are from the earlier bitstream and cover the 48-pose table only,
-  so the trajectory comparison currently has a DLS row and no analytic row.
+- **The worst pose takes 22 iterations where the model takes 12.** The model's
+  table (`ik_model_iters_tbl`) has min 3, med 4, p95 11, max 12; the hardware
+  reproduces the first three exactly and misses the last by a factor of two.
+  Crucially, **both** the PL and the PS column read 22, and the PS column is
+  this kernel's source compiled in double — so this is not quantisation, it is
+  a difference between `iks::dls()` and `M.ik_dls()`. The known candidate is the
+  convergence test, `err < tol` in the model against `err_sq < tol_sq` in the
+  kernel: equivalent in exact arithmetic, not identical in rounding, and capable
+  of compounding on a pose re-approaching the tolerance slowly. That mechanism
+  already accounts for the 3-of-256 discrepancy below, but there it moves the
+  count by one. Ten is a different claim and needs the residual sequences
+  compared directly. Until then `max/med` = 5.47 has one solve behind its
+  numerator, and that solve is one the reference cannot reproduce. **It is
+  identical in both runs**, so it is not a marginal solve that could land either
+  way — it is a repeatable property of the kernel that nothing currently
+  explains, which makes it more concerning rather than less.
+- **The per-iteration cost rose 7.7% across the retarget**, 1282 → 1381 cycles
+  at 80 MHz, with no change to the DLS inner loop — only to the *values* of
+  compile-time DH constants, which should not alter the schedule. A clock
+  difference would have to be 74.3 MHz, which `build_vivado.tcl` does not offer.
+  Most likely a different synthesis run scheduling differently, but that is a
+  guess. `make -C hls reports` against `report2.log` settles it with no
+  hardware. Until it does, absolute latencies from this run are not comparable
+  with the pre-retarget ones.
+- ~~**Chain drift is 12.6× worse than on the previous arm.**~~ **Largely
+  answered.** It was 1922 µrad against the old arm's 152, with three variables
+  confounded (arm scale, path scale, path conditioning). Holding all three fixed
+  and taking the sampling interval from 23.5 mm to 2.35 mm per sample brings it
+  to 183 µrad, so sampling interval is the dominant term and the retarget is
+  not the suspect. What is *not* closed: this is still not a controlled
+  cross-arm comparison, and the drift-versus-step-size relation is superlinear
+  on two points (10× finer sampling, 10.5× less drift, with 10× more solves) —
+  two points do not establish a law.
+- **`ik_analytic_kernel` has not been re-synthesised since the retarget.** It
+  carries a different θ1 branch and a different wrist extraction, so its
+  figures need a rebuild rather than a re-run, and it has never been through
+  the two-workload harness at all — the trajectory comparison currently has a
+  DLS row and no analytic row.
 - **The DLS tail block's selection is biased toward the unclamped solver** (see
   above). Worth replacing with a criterion that does not reference any
   solver's iteration count — seed distance alone — and keeping the current
@@ -454,19 +597,29 @@ before they ever reach hardware.
   as a failure and is not one. Confirmed identical at `HEAD`, so it predates
   the trust region. Either run it at the kernel's λ=0.02 / tol=1e-3 or say in
   the output why those settings are deliberately harsher.
-- **The harness now reports latency ÷ iterations** (`dls per iter (PL)`), so
-  the "all spread is iteration count" claim becomes a measurement rather than
-  a fit across two separately sorted arrays. It should come out flat at
-  ~15,950 ns; if it does not, something in the iteration has become
-  data-dependent. The trust region was written to keep it flat — the shift
-  count is always computed and always applied, never conditionally skipped.
-- **One lap is not a stability proof.** Chain drift peaked at 152 µrad and came
-  back down within 50 samples, which is evidence of a bounded, self-correcting
-  chain and is consistent with each solve re-converging to `tol`. It is not the
-  same as showing the bound holds over minutes of operation, and a pentagon
-  revisits the same five configurations repeatedly. Run several hundred laps,
-  and a path that does not return to its own starting neighbourhood, before
-  quoting a drift bound rather than a drift measurement.
+- **The `per iter` rows came out flat and that is the result, not a formality.**
+  Across 3–22 iterations on the 48-pose table the per-iteration figure spans
+  17273–17427 ns, a 0.89% band, and the variation within it is fully explained
+  by the 423 ns fixed overhead amortising. Nothing inside an iteration is
+  data-dependent. The trust region was written to keep this true — the shift
+  count is always computed and always applied, never conditionally skipped —
+  and the measurement now confirms it directly rather than by inference across
+  two separately sorted arrays.
+- **The tracking case's flatness is conditional on step size, and the crossover
+  is not located.** Two iterations at every one of 500 samples is a statement
+  about a 2.35 mm step; at 23.5 mm the same lap takes 2 or 3. The sweep has two
+  points an order of magnitude apart. 20, 30 and 50 samples per edge would
+  bracket it, cost a generator change and a re-run, and would turn "DLS is
+  fixed-latency while tracking" into a claim with a servo rate attached. Until
+  then, always quote the sampling rate with the ratio.
+- **One lap is not a stability proof.** Divergence stays under 100 µrad at every
+  vertex, peaks at 183 µrad, and *falls* when the number of solves per lap goes
+  up tenfold — strong evidence of a bounded, self-correcting chain consistent
+  with each solve re-converging to `tol`. It is still not the same as showing
+  the bound holds over minutes of operation: 500 samples is 0.5 s at 1 kHz, and
+  a pentagon revisits the same five configurations repeatedly. Run several
+  hundred laps, and a path that does not return to its own starting
+  neighbourhood, before quoting a drift bound rather than a drift measurement.
 - The matrix IPs have never been measured on hardware. They are packaged and
   the harness section for them exists; they have simply never been in a
   bitstream with a kernel worth measuring alongside.
