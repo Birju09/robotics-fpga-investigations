@@ -2,38 +2,25 @@
 #include "kinematics.hpp"
 #include "tb_common.hpp"
 
-//
-//! Two independent checks per vector:
-//
-//! 1. Pose round trip - FK(IK(pose)) must land back on the commanded pose,
-//! in BOTH position and orientation.  This is the property a robot
-//! actually depends on, and it is asserted on every vector without
-//! exception.
-//
-//! 2. Joint agreement with the golden branch.  This is only a meaningful
-//! assertion when the pose is well conditioned.  Near the elbow
-//! singularity gamma = acos(cos_gamma) has slope 1/|sin(gamma)|, so the
-//! +-0.5 LSB of the Q16.16 square root turns into milliradians of joint
-//! error while the pose is still hit to ~1e-5 m.  The elbow-up and
-//! elbow-down branches are merging there and joint space stops being
-//! well determined, so those vectors are reported separately rather than
-//! being allowed to fail a check they cannot pass.
-//
+//! Two checks per vector: (1) FK(IK(pose)) round trip, asserted
+//! unconditionally - the property a robot actually depends on. (2) Joint
+//! agreement with the golden branch, meaningful only when well
+//! conditioned: near the elbow singularity, gamma = acos(cos_gamma) has
+//! slope 1/|sin(gamma)|, so +-0.5 LSB of the Q16.16 sqrt becomes
+//! milliradians of joint error even while position is still hit to
+//! ~1e-5 m. Those vectors are reported separately, not asserted.
 
 //! Below this |sin(gamma)| joint-space agreement is reported, not asserted.
 static const double COND_MIN = 0.05;
 
-//! The same policy for the shoulder, which on an arm with a lateral offset has
-//! its own conditioning number.  d3 removes the singularity a zero-offset arm
-//! has where the wrist centre meets the joint-1 axis, but it does not do so for
-//! free: it leaves a boundary layer outside the singular cylinder in which
-//! theta1 is finite and ill-conditioned, because
+//! Same policy for the shoulder: d3 removes the zero-offset arm's
+//! wrist-centre/joint-1-axis singularity, but leaves a boundary layer where
+//! theta1 is finite yet ill-conditioned, since
 //! d(theta1)/d(rho) = -d3 / (rho * root) diverges as root -> 0.
 //
-//! 0.20 is measured, not guessed.  Over this 256-vector set every vector that
-//! missed the 5e-3 rad joint tolerance had root/rho < 0.14, and every vector
-//! above 0.30 agreed to 5.7e-4 or better - two orders inside tolerance.  The
-//! gap between those two figures is where this threshold sits.
+//! 0.20 is measured: over this 256-vector set, every vector missing the
+//! 5e-3 rad tolerance had root/rho < 0.14, and every vector above 0.30
+//! agreed to 5.7e-4 or better - the threshold sits in that gap.
 static const double COND_SH_MIN = 0.20;
 
 int main() {
@@ -92,12 +79,9 @@ int main() {
             worst =
                 std::max(worst, std::fabs(tb_angdiff(tb_dbl(q[i]), gold[i])));
 
-        //! Joint agreement is asserted only where BOTH conditioning numbers
-        //! say joint space is well determined.  The pose round trip below is
-        //! asserted unconditionally, on every vector, because that is the
-        //! thing the solver is actually required to get right - a pose reached
-        //! to 1e-5 m through a differently-spelled configuration is a correct
-        //! answer, not a failure.
+        //! Joint agreement asserted only where both conditioning numbers say
+        //! joint space is well determined; a pose reached through a
+        //! differently-spelled configuration is correct, not a failure.
         if (cond < COND_MIN) {
             n_ill++;
             worst_ill = std::max(worst_ill, worst);
@@ -110,8 +94,6 @@ int main() {
                         TOL_JOINT);
         }
 
-        //! Round trip: rebuild the commanded rotation the same way the kernel
-        //! does, then compare against FK of the returned joints.
         ik_real_t qr[IK_DOF];
         for (int i = 0; i < IK_DOF; i++)
             qr[i] = ik_from_word(q[i]);

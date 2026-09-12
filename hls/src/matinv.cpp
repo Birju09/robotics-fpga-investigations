@@ -11,13 +11,11 @@ int mi::invert(const ik_real_t A[IK_MAT_MAX][IK_MAT_MAX], int n,
                ik_real_t Ainv[IK_MAT_MAX][IK_MAT_MAX]) {
 #pragma HLS INLINE off
 
-    //! Augmented working matrix [ P | I ].  Rows/cols beyond n carry an
-    //! identity so the elimination below can run to a fixed 6 columns.
+    //! Augmented [ P | I ]; rows/cols beyond n padded with identity so
+    //! elimination always runs to a fixed 6 columns.
     //
-    //! ik_work_t, not ik_real_t: the elimination stores a value per cycle and
-    //! ik_real_t's AP_RND would buy a rounding adder on every one of them.
-    //! Saturation is kept - see the type's note in ik_types.hpp.  The IP's
-    //! interface is unchanged; only the intermediates truncate.
+    //! ik_work_t (not ik_real_t) for the intermediates: avoids an AP_RND
+    //! rounding adder per store. IP interface itself is unaffected.
     ik_work_t M[IK_MAT_MAX][AUG];
 #pragma HLS ARRAY_PARTITION variable = M complete dim = 2
 
@@ -38,7 +36,7 @@ MI_INIT:
 
 MI_COL:
     for (int col = 0; col < IK_MAT_MAX; col++) {
-        //! ---- partial pivot: largest magnitude at or below the diagonal ----
+        //! partial pivot: largest magnitude at/below diagonal
         int prow = col;
         ik_work_t best = mi_abs(M[col][col]);
     MI_PIV:
@@ -54,14 +52,13 @@ MI_COL:
         }
 
         if (best < (ik_work_t)IK_PIVOT_EPS) {
-            //! Flag and keep going with a unit pivot: bailing out early would
-            //! make the IP's latency data-dependent, and the caller is told via
-            //! status either way.
+            //! Keep going with a unit pivot rather than bail: latency must stay
+            //! data-independent. Caller is still told via status.
             st = IK_ERR_SINGULAR;
             M[col][col] = (ik_work_t)1;
         }
 
-        //! ---- swap rows col <-> prow ----
+        //! swap rows col <-> prow
     MI_SWAP:
         for (int j = 0; j < AUG; j++) {
 #pragma HLS UNROLL
@@ -70,27 +67,23 @@ MI_COL:
             M[prow][j] = t;
         }
 
-        //! ---- normalise the pivot row ----
+        //! normalise the pivot row
         ik_work_t inv_p = (ik_work_t)((ik_real_t)1 / (ik_real_t)M[col][col]);
     MI_NORM:
-        //! Rolled, not unrolled.  Twelve concurrent products cost twelve
-        //! multipliers; at II=1 over twelve cycles this costs one, and the
-        //! twelve cycles are cheap against the elimination below.  j is now a
-        //! variable index into the dim=2 partition, which resolves to a mux
-        //! rather than a port conflict because only one column is touched per
-        //! cycle.  See the resource/latency note in ik_config.hpp.
+        //! Rolled (not unrolled): 1 multiplier over 12 cycles vs. 12 multipliers,
+        //! cheap next to the elimination below. Variable j into the dim=2
+        //! partition resolves to a mux, not a port conflict, since one column
+        //! is touched per cycle. See ik_config.hpp.
         for (int j = 0; j < AUG; j++) {
 #pragma HLS PIPELINE II = 1
             M[col][j] = (ik_work_t)((ik_acc_t)(M[col][j] * inv_p));
         }
 
-        //! ---- eliminate the column from every other row ----
+        //! eliminate the column from every other row
     MI_ELIM:
-        //! II=6, not 1.  The inner j loop is fully unrolled across AUG=12
-        //! columns, so this loop's II decides whether that costs twelve
-        //! multipliers or two shared across six cycles.  This was the single
-        //! largest DSP consumer in ik_dls_kernel.  Latency goes from six
-        //! cycles per column to thirty-six, constant either way.
+        //! II=6: inner j loop unrolled across AUG=12 columns, so this II picks
+        //! 2 shared multipliers over 6 cycles instead of 12. Was the largest
+        //! DSP consumer in ik_dls_kernel.
         for (int i = 0; i < IK_MAT_MAX; i++) {
 #pragma HLS PIPELINE II = 6
             if (i != col) {
@@ -117,9 +110,7 @@ MI_OUT:
     return st;
 }
 
-//! ------------------------------------------------------------------
 //! Standalone IP wrapper
-//! ------------------------------------------------------------------
 extern "C" void mat_inv_kernel(int n,
                                const ik_word_t A[IK_MAT_MAX * IK_MAT_MAX],
                                ik_word_t Ainv[IK_MAT_MAX * IK_MAT_MAX],

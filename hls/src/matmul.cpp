@@ -5,20 +5,14 @@ void mm::multiply(const ik_real_t A[IK_MAT_MAX][IK_MAT_MAX],
                   int n, bool ta, bool tb,
                   ik_real_t C[IK_MAT_MAX][IK_MAT_MAX]) {
 #pragma HLS INLINE off
-    //! Clamped rather than trusted: the loop bounds below index C directly, so
-    //! a caller passing something out of range would write past the array.
-    //! mat_mul_kernel checks its arguments, but mm::multiply() is also called
-    //! straight from ik_dls without one.
+    //! Clamped rather than trusted: mm::multiply() is called directly from
+    //! ik_dls without argument checking (unlike mat_mul_kernel).
     const int mr = (m < IK_MAT_MAX) ? m : IK_MAT_MAX;
     const int nc = (n < IK_MAT_MAX) ? n : IK_MAT_MAX;
 
-//! Zero the whole destination first - no multiplier, II=1 - so the compute
-//! loop below can visit only the m x n block that was actually asked for.
-//
-//! The old form ran the full 6x6 and wrote zeros to the cells outside it,
-//! which meant the two n=1 products ik_dls issues per iteration (U and DQ,
-//! both 6x6-by-6x1) each spent 36 MM_COL iterations to produce 6 useful
-//! values.  At II=3 that is 216 cycles a solve thrown away.
+//! Zero the whole destination first so the compute loop below can visit only
+//! the m x n block actually requested - avoids wasting cycles on ik_dls's
+//! frequent narrow (6x6-by-6x1) products.
 MM_ZERO:
     for (int i = 0; i < IK_MAT_MAX; i++) {
         for (int j = 0; j < IK_MAT_MAX; j++) {
@@ -31,18 +25,14 @@ MM_ROW:
     for (int i = 0; i < mr; i++) {
 #pragma HLS LOOP_TRIPCOUNT min = 1 max = 6
     MM_COL:
-        //! MM_DOT below is fully unrolled, so the II of this loop is what
-        //! decides whether its six products become six multipliers or three
-        //! shared across two cycles.  II=3 while the budget was 126% of the
-        //! DSPs; at 82% there is room to buy a third multiplier back and a
-        //! third of the cycles with it.  See ik_config.hpp.
+        //! MM_DOT is fully unrolled; this loop's II picks multiplier sharing.
+        //! See ik_config.hpp for the DSP-budget history behind II=2.
         for (int j = 0; j < nc; j++) {
 #pragma HLS PIPELINE II = 2
 #pragma HLS LOOP_TRIPCOUNT min = 1 max = 6
-            //! Q32.32 accumulator: the product of two Q16.16 values is exactly
-            //! Q32.32, and six of them sum without rounding.  One rounding step
-            //! happens on the store below, which is what makes this bit-
-            //! comparable to model/ik_model.py.
+            //! Q32.32 accumulator: product of two Q16.16 values is exact in
+            //! Q32.32, so six sum without rounding. Rounds once on store below,
+            //! matching model/ik_model.py bit-for-bit.
             ik_acc_t acc = (ik_acc_t)0;
         MM_DOT:
             for (int p = 0; p < IK_MAT_MAX; p++) {
@@ -58,9 +48,7 @@ MM_ROW:
     }
 }
 
-//! ------------------------------------------------------------------
 //! Standalone IP wrapper
-//! ------------------------------------------------------------------
 extern "C" void mat_mul_kernel(int m, int k, int n, int ta, int tb,
                                const ik_word_t A[IK_MAT_MAX * IK_MAT_MAX],
                                const ik_word_t B[IK_MAT_MAX * IK_MAT_MAX],

@@ -1,20 +1,11 @@
 #!/usr/bin/env python3
 """
-Render the manipulator's DH frame assignment as SVG.
+Render the manipulator's DH frame assignment as SVG (docs/figures/dh_frames*.svg,
+embedded by README.md via <picture> for theme-following).
 
-Writes docs/figures/dh_frames.svg and dh_frames_dark.svg, which README.md
-embeds through a <picture> element so the figure follows the reader's theme.
-
-Every dimension and every frame in the output is computed from ik_model's DH
-table by calling ik_model.fk_all() - nothing here restates a link length or a
-frame orientation as a literal.  Editing DH_A/DH_ALPHA/DH_D and re-running is
-the whole update procedure, and a figure that disagrees with the kinematics is
-therefore not a state this script can reach.
-
-SVG rather than a raster format, and hand-emitted rather than matplotlib: the
-output is resolution-independent, and the repository's only Python dependency
-stays numpy.  The drawing primitives needed here are a projected line, an
-arrowhead and a text anchor, which is not enough to justify a plotting stack.
+All geometry is computed from ik_model.fk_all(), never restated as a literal,
+so the figure cannot disagree with the kinematics. Hand-emitted SVG (not
+matplotlib) keeps the repo's only Python dependency as numpy.
 """
 
 import os
@@ -28,21 +19,16 @@ import ik_model as M  # noqa: E402
 OUT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..",
                        "docs", "figures")
 
-# Configuration drawn in panel A.  Chosen only so that no two frame origins
-# project on top of each other at the viewing angle below; nothing about the
-# figure's content depends on it.
+# Panel A pose, chosen only so no two frame origins overlap at this view angle.
 Q_VIEW = np.array([0.55, -1.20, 0.55, 0.60, 0.70, 0.40])
 
-# Panel B is the same arm with theta1 = 0 and the wrist joints zeroed.  On an
-# arm with a lateral offset this does NOT put the chain in one plane: frames 0
-# to 2 sit at y = 0 and frames 3 to 6 at y = -d3.  The two planes are parallel,
-# though, so a projection onto x-z is still undistorted for every link - only
-# the d3 step itself is edge-on, and it is annotated rather than drawn.
+# Panel B: theta1 = 0, wrist zeroed. Frames 0-2 sit at y=0, frames 3-6 at
+# y=-d3 (parallel planes, due to the lateral offset) - x-z projection is
+# undistorted for every link; the d3 step itself is edge-on and annotated.
 Q_PLANAR = np.array([0.0, -1.20, 0.55, 0.0, 0.0, 0.0])
 
-# Camera azimuth is negative so that +x projects to the right of the frame: at
-# a positive azimuth a forward reach runs down-left across the page and reads
-# as an arm hanging rather than extending.
+# Negative azimuth so +x projects rightward (positive azimuth reads as the
+# arm hanging rather than extending).
 AZIM_DEG, ELEV_DEG = -58.0, 22.0
 AXIS_LEN = 0.050          # metres, length of a drawn frame axis
 GRID_HALF = 0.14          # metres, half-extent of the decorative floor grid
@@ -113,8 +99,7 @@ class Canvas:
                   f'font-weight="{weight}" text-anchor="{anchor}" '
                   f'dominant-baseline="{baseline}"')
         if halo:
-            # Painted twice: a fat stroke of the background colour under the
-            # glyphs keeps a label legible where it crosses a link.
+            # Background-colour stroke under the glyphs for legibility over links.
             self.add(f'<text {common} fill="none" stroke="{halo}" '
                      f'stroke-width="4.5" stroke-linejoin="round" '
                      f'opacity="{opacity}">{esc(s)}</text>')
@@ -133,12 +118,12 @@ class Canvas:
         self.poly([tuple(p1), tuple(base + perp * head * 0.38),
                    tuple(base - perp * head * 0.38)], colour, opacity=opacity)
 
-    def svg(self, w, h):
+    def svg(self, w, h,
+            label="Denavit-Hartenberg frame assignment for the 6R manipulator"):
         body = "\n".join(self.parts)
         return (f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" '
                 f'height="{h}" viewBox="0 0 {w} {h}" '
-                f'role="img" aria-label="Denavit-Hartenberg frame assignment '
-                f'for the 6R manipulator">\n{body}\n</svg>\n')
+                f'role="img" aria-label="{esc(label)}">\n{body}\n</svg>\n')
 
 
 # ---------------------------------------------------------------------------
@@ -203,18 +188,14 @@ class PlanarView:
 # ---------------------------------------------------------------------------
 # Panel A: 3D frame assignment
 # ---------------------------------------------------------------------------
-# Where each frame's {i} label sits relative to its origin, in screen pixels.
-# Tuned against the rendered output and connected by a leader line, because
-# two pairs of frames are close enough that no automatic rule places them
-# well: {2} and {3} are a3 = 2 cm apart, and {4} and {5} coincide exactly.
+# Per-frame label offset (screen px), hand-tuned: {2}/{3} are a3=2cm apart
+# and {4}/{5} coincide exactly, so no automatic placement rule works.
 FRAME_LABEL_DXY = {
     0: (-30, 26), 1: (-42, 16), 2: (-46, -12), 3: (38, -14),
     4: (-56, -22), 5: (-58, 12), 6: (36, 6),
 }
 
-# Only the z axes are labelled: they are the joint axes, and labelling all 21
-# arrows made the elbow and wrist unreadable.  x and y are identified by the
-# colour key instead.
+# Only z axes labelled (joint axes); labelling all 21 arrows was unreadable.
 AXIS_LABEL_DXY = {0: (0, 0)}
 
 
@@ -235,7 +216,7 @@ def draw_panel_a(c, C):
     v.fit(pts, (PANEL_A[0] + 26, PANEL_A[1] + 92, PANEL_A[2] - 52,
                 PANEL_A[3] - 300), 34)
 
-    # --- ground plane grid, z = 0 ---
+    # ground plane grid, z = 0
     g = GRID_HALF
     step = 0.05
     t = -g
@@ -244,7 +225,7 @@ def draw_panel_a(c, C):
         c.line(v([-g, t, 0]), v([g, t, 0]), C["grid"], 1.0)
         t += step
 
-    # --- base ---
+    # base
     br = 0.055
     ring = [v([br * np.cos(a), br * np.sin(a), 0])
             for a in np.linspace(0, 2 * np.pi, 48)]
@@ -252,14 +233,14 @@ def draw_panel_a(c, C):
     c.path("M " + " L ".join(f"{x:.2f} {y:.2f}" for x, y in ring) + " Z",
            C["muted"], 1.4)
 
-    # --- links ---
+    # links
     seg = [v(o) for o in origins]
     for i in range(6):
         if np.linalg.norm(origins[i + 1] - origins[i]) < 1e-9:
             continue
         c.line(seg[i], seg[i + 1], C["link"], 7.0)
 
-    # --- frames ---
+    # frames
     for i, T in enumerate(Ts):
         o = T[:3, 3]
         po = v(o)
@@ -268,7 +249,7 @@ def draw_panel_a(c, C):
             c.arrow(po, tip, C[key], 2.4, 9.0)
         c.circle(po, 5.0, C["joint_fill"], C["ink"], 2.0)
 
-    # Labels last, so that no arrow is drawn over one.
+    # labels last, so no arrow is drawn over one
     for i, T in enumerate(Ts):
         po = np.array(v(T[:3, 3]))
         dx, dy = FRAME_LABEL_DXY[i]
@@ -279,7 +260,7 @@ def draw_panel_a(c, C):
         c.text(lp, "{%d}" % i, 17, C["ink"], "middle", "700", SANS,
                halo=C["halo"])
 
-    # --- joint-variable callouts: joint i turns about z of frame i-1 ---
+    # joint-variable callouts: joint i turns about z of frame i-1
     for i in range(6):
         T = Ts[i]
         o = T[:3, 3]
@@ -288,8 +269,7 @@ def draw_panel_a(c, C):
         d = tip - po
         n = np.hypot(*d) or 1.0
         perp = np.array([-d[1], d[0]]) / n
-        # Put the label to whichever side of the joint axis points away from
-        # the arm's centroid, so it never lands on top of a link.
+        # Label on the side of the axis away from the arm's centroid, to clear links.
         cen = np.mean([v(p) for p in origins], axis=0)
         if np.dot(perp, po - cen) < 0:
             perp = -perp
@@ -297,14 +277,14 @@ def draw_panel_a(c, C):
         c.text(lp, f"θ{i + 1}", 17, C["z"], "middle", "700", SERIF, "italic",
                halo=C["halo"])
 
-    # --- tool approach axis ---
+    # tool approach axis
     o6 = Ts[6][:3, 3]
     tip = v(o6 + AXIS_LEN * 1.7 * Ts[6][:3, 2])
     c.line(v(o6), tip, C["z"], 1.6, dash="5 4", opacity=0.75)
     c.text((tip[0] + 26, tip[1] + 34), "approach axis", 13, C["muted"],
            "middle", "500", SANS, halo=C["halo"])
 
-    # --- titles ---
+    # titles
     c.text((PANEL_A[0] + 34, 44), "A.  Frame assignment", 22, C["ink"],
            "start", "700")
     c.text((PANEL_A[0] + 34, 72),
@@ -312,7 +292,7 @@ def draw_panel_a(c, C):
            "joint i turns about z of frame {i−1}",
            14, C["muted"], "start", "400")
 
-    # --- legend ---
+    # legend
     lx, ly = PANEL_A[0] + 34, H - 176
     c.text((lx, ly - 26), "axis colour key", 13, C["ink"], "start", "700")
     for k, (key, lab) in enumerate((("x", "x — common normal"),
@@ -362,30 +342,25 @@ def dim_line(c, C, p0, p1, label, off=(0, 0), tick=6, size=14, colour=None):
 def draw_panel_b(c, C):
     Ts = M.fk_all(Q_PLANAR)
     o = [T[:3, 3] for T in Ts]
-    # Every frame must sit at y = 0 or y = -d3, i.e. in one of two planes
-    # parallel to x-z; anything else would make the projection below lie.
+    # Frames must sit at y=0 or y=-d3 (planes parallel to x-z), else the
+    # x-z projection below would be foreshortened.
     for i, p in enumerate(o):
         assert min(abs(p[1]), abs(abs(p[1]) - M.D3)) < 1e-9, \
             f"frame {i} is at y = {p[1]:.4f}, neither 0 nor -d3; the side " \
             "elevation would be foreshortened"
 
-    # The drawing keeps to the upper two thirds; the lower third is the note
-    # block, and the left inset is where the d1 dimension line lives.
     v = PlanarView()
     v.fit(o, (PANEL_B[0] + 112, PANEL_B[1] + 112, PANEL_B[2] - 236, 452), 24)
 
     P = [np.array(v(p)) for p in o]
 
-    # Elbow decomposition: o2 -> o3 is a3, o3 -> o4 is d4, and the closing
-    # side is the effective forearm L3 = hypot(a3, d4) at PHI from a3.  Both
-    # are read from ik_model, not recomputed here.
+    # Elbow: o2->o3 is a3, o3->o4 is d4, closing side is L3 = hypot(a3, d4).
     c.line(P[0], P[1], C["link"], 6.0)
     c.line(P[1], P[2], C["link"], 6.0)
     c.line(P[2], P[3], C["link"], 6.0)
     c.line(P[3], P[4], C["link"], 6.0)
     c.line(P[4], P[6], C["link"], 6.0)
 
-    # L3 closing side of the forearm triangle
     c.line(P[2], P[4], C["l3"], 2.2, dash="7 5")
 
     # base ground hatch
@@ -400,7 +375,6 @@ def draw_panel_b(c, C):
             continue
         c.circle(p, 5.0, C["joint_fill"], C["ink"], 2.0)
 
-    # --- dimensions, all values from ik_model ---
     o0, o1, o2, o3, o4, o6 = o[0], o[1], o[2], o[3], o[4], o[6]
 
     # d1: vertical rise of frame 1 above the base plane
@@ -410,9 +384,8 @@ def draw_panel_b(c, C):
     dim_line(c, C, a, b, f"d₁ = {M.D1:g}", off=(-26, 0))
     c.line(np.array(v(o1)), b, C["dim"], 1.0, dash="4 4", opacity=0.7)
 
-    # a1: horizontal offset of frame 1.  Zero on this arm, so there is no
-    # dimension to draw - the shoulder axis meets the base axis - and a
-    # zero-length dimension line would read as a drawing error.
+    # a1 is zero on this arm (shoulder axis meets base axis); a zero-length
+    # dimension line would read as a drawing error, so annotate instead.
     if abs(M.A1) > 1e-9:
         yoff = -34
         a = np.array(v([o0[0], 0, o1[2]])) + np.array([0, yoff])
@@ -432,8 +405,7 @@ def draw_panel_b(c, C):
     c.text(mid + perp * 22, f"a₂ = {M.A2:g}", 15, C["dim"], "middle",
            "600", SERIF, "italic", halo=C["halo"])
 
-    # a3 is 2 cm and its own segment is barely longer than the joint dot, so
-    # it gets a leader line out to clear space rather than an inline label.
+    # a3 is 2 cm, barely longer than the joint dot, so use a leader line.
     mid = (P[2] + P[3]) / 2
     lab = mid + np.array([26, -46])
     c.line(mid, lab + np.array([-6, 8]), C["dim"], 1.0, opacity=0.75)
@@ -446,38 +418,34 @@ def draw_panel_b(c, C):
     perp = np.array([-d[1], d[0]]) / n
     c.text(mid - perp * 26, f"d₄ = {M.D4:g}", 15, C["dim"], "middle",
            "600", SERIF, "italic", halo=C["halo"])
-    # L3's label rides at a third of the way along rather than the midpoint,
-    # which keeps it clear of the labels crowding the wrist centre.
+    # L3 label placed off-midpoint to clear the crowded wrist-centre labels.
     d = P[4] - P[2]
     n = np.hypot(*d) or 1.0
     perp = np.array([-d[1], d[0]]) / n
     c.text(P[2] + d * 0.55 + perp * 34, f"L₃ = {M.L3:.4f}", 15, C["l3"],
            "middle", "700", SERIF, "italic", halo=C["halo"])
 
-    # d6: the tool segment is 8 cm and its midpoint sits inside the wrist
-    # marker, so this label is led out to the right as well.
+    # d6: tool segment midpoint sits inside the wrist marker; lead out right.
     mid = (P[4] + P[6]) / 2
     lab = mid + np.array([44, -34])
     c.line(mid, lab + np.array([-6, 8]), C["dim"], 1.0, opacity=0.75)
     c.text(lab, f"d₆ = {M.D6:g}", 14, C["dim"], "start", "600", SERIF,
            "italic", halo=C["halo"])
 
-    # wrist centre callout: the point the analytic solver locates first
+    # wrist centre: the point the analytic solver locates first
     c.circle(P[4], 10.0, "none", C["l3"], 1.6, opacity=0.9)
     c.text(P[4] + np.array([-16, 28]), "wrist centre", 12, C["muted"], "end",
            "500", SANS, halo=C["halo"])
     c.text(P[6] + np.array([12, 14]), "tool", 12, C["muted"], "start",
            "500", SANS, halo=C["halo"])
 
-    # --- titles and notes ---
     c.text((PANEL_B[0] + 30, 44), "B.  Link dimensions", 22, C["ink"],
            "start", "700")
     c.text((PANEL_B[0] + 30, 72),
            "side elevation, θ₁ = 0, wrist zeroed; metres",
            14, C["muted"], "start", "400")
 
-    # d3 is perpendicular to the page in this view, so it gets a marker on the
-    # frame-3 origin and a note rather than a dimension line.
+    # d3 is perpendicular to the page here, so mark + note instead of a dimension line.
     c.circle(P[3], 11.0, "none", C["dim"], 1.6, opacity=0.9)
     c.line(P[3], P[3] + np.array([34, 40]), C["dim"], 1.0, opacity=0.75)
     c.text(P[3] + np.array([38, 44]),

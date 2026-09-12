@@ -5,17 +5,11 @@
 #include "ik_types.hpp"
 
 //
-//! Elementary functions, implemented directly rather than pulled from
-//! hls_math.h.
-//
-//! Two reasons, both specific to this investigation:
-//! 1. Determinism.  Every routine below is a fixed trip-count loop, so the
-//! latency reported by C-synthesis is the latency you get for any input.
-//! That is the whole premise of comparing a closed-form solver against an
-//! iterative one - the closed-form path must have no data-dependent cost.
-//! 2. ap_fixed support in the vendor math library varies by word length and
-//! release; a CORDIC written here behaves identically in csim, cosim and
-//! the float reference build.
+//! Elementary functions, implemented directly (not hls_math.h) for two
+//! reasons: (1) fixed trip-count loops give data-independent latency, which
+//! is the whole premise of comparing closed-form vs. iterative solvers; (2)
+//! a hand-written CORDIC behaves identically across csim/cosim/float builds,
+//! unlike the vendor math library.
 //
 //! All angles are radians.
 //
@@ -60,18 +54,9 @@ namespace ikm {
 #endif
     }
 
-    //! Divide by 2^n, exactly, in either build.
-    //!
-    //! Same contract as cshift() above and for the same reason: the DLS trust
-    //! region (ik_config.hpp) scales its step by a power of two, and if the
-    //! float and fixed builds disagreed about that scaling they would follow
-    //! different iteration trajectories - which is precisely the confound the
-    //! host regression exists to avoid.  A right shift on ap_fixed and a
-    //! power-of-two divide on double are both exact, so they cannot.
-    //!
-    //! @param v Value to scale
-    //! @param n Number of halvings (>= 0)
-    //! @return  v / 2^n
+    //! v / 2^n, exact in both builds - the DLS trust region (ik_config.hpp)
+    //! scales its step this way, and float/fixed must agree exactly or they'd
+    //! follow different iteration trajectories.
     inline ik_real_t halve(ik_real_t v, int n) {
 #pragma HLS INLINE
 #ifdef IK_USE_FLOAT
@@ -81,14 +66,7 @@ namespace ikm {
 #endif
     }
 
-    //! Wrap an angle into the range [-π, π].
-    //!
-    //! Reduces any angle to the principal range using four conditional folds,
-    //! all unrolled. Covers |angle| < 9π with deterministic
-    //! (non-data-dependent) trip count.
-    //!
-    //! @param a Input angle (radians)
-    //! @return   Wrapped angle in [-π, π] (radians)
+    //! Wrap angle into [-π, π]. Four unrolled folds cover |angle| < 9π.
     inline ik_real_t wrap_pi(ik_real_t a) {
 #pragma HLS INLINE
         cordic_t z = (cordic_t)a;
@@ -107,27 +85,19 @@ namespace ikm {
     //! Reciprocal by table-seeded Newton-Raphson.
     //! ------------------------------------------------------------------
     //
-    //! spd::solve() needs six reciprocals per call, and an ap_fixed divide
-    //! synthesises a sequential restoring divider of roughly one cycle per
-    //! result bit - about 35 each, which made division the single largest term
-    //! in the solver once the Gauss-Jordan elimination was gone.
+    //! Replaces an ap_fixed divide (~35 cycles, one restoring-divider bit per
+    //! cycle) that was the largest term in spd::solve() once Gauss-Jordan was
+    //! gone. Integer-only and identical in both builds, so tb_spd.cpp can
+    //! check it against exact reciprocals despite the host regression running
+    //! in double.
     //
-    //! This is integer-only and identical in both builds, so hls/tb/tb_spd.cpp
-    //! can check it against exact reciprocals even though the host regression
-    //! runs in double and never exercises the fixed-point path otherwise.  That
-    //! mattered: a silently wrong reciprocal corrupts every DLS solve, and
-    //! there would otherwise be no way to catch it before hardware.
+    //! Verified over raw inputs 7 (IK_PIVOT_EPS floor) to 20.0: within one raw
+    //! LSB of exact. May differ from the built-in divider by that LSB (rounds
+    //! vs. truncates).
     //
-    //! Swept over every raw input from 7 (just above the IK_PIVOT_EPS floor) to
-    //! 20.0, no result differs from the exact reciprocal by more than one raw
-    //! LSB.  It may still differ from the built-in divider by that LSB, which
-    //! rounds where this truncates.
-    //
-    //! Method: normalise d = u * 2^(e+1) with u in [0.5, 1), seed 1/u from a
-    //! 128-entry table (7 bits, since the leading bit of u is always set), then
-    //! two Newton steps r <- r*(2 - u*r).  Quadratic convergence takes 8 bits
-    //! to
-    //! 32.  Q16.16 in, Q16.16 out: the result raw value is 2^32/d_raw.
+    //! Method: normalise d = u * 2^(e+1), u in [0.5, 1); seed 1/u from a
+    //! 128-entry table (7 bits); two Newton steps r <- r*(2 - u*r), 8->32 bit
+    //! convergence. Q16.16 in/out: result raw value is 2^32/d_raw.
     //
     static const uint32_t RECIP_SEED[128] = {
         2139127680u, 2122609320u, 2106344115u, 2090326289u, 2074550241u,
@@ -198,15 +168,8 @@ namespace ikm {
         return neg ? -(int32_t)res : (int32_t)res;
     }
 
-    //! Compute reciprocal (1/d) of a working-type value.
-    //!
-    //! Uses table-seeded Newton-Raphson iteration for fixed-point targets, or
-    //! exact division for float builds. The float reference build preserves
-    //! exact division to serve as the baseline for measuring fixed-point
-    //! quantization error.
-    //!
-    //! @param d Input value (non-zero)
-    //! @return  1/d with accuracy within one raw LSB of exact reciprocal
+    //! 1/d, non-zero. Float build uses exact division (baseline for measuring
+    //! fixed-point quantization error).
     inline ik_work_t recip(ik_work_t d) {
 #pragma HLS INLINE off
 #if defined(IK_USE_FLOAT) || !defined(IK_FAST_RECIP)
@@ -223,10 +186,8 @@ namespace ikm {
     //! CORDIC rotation mode -> sin and cos of `angle`.
     //! ------------------------------------------------------------------
     //
-    //! The engine itself, always inlined, with ROT left unannotated so the two
-    //! entry points below can schedule it differently.  One implementation, two
-    //! schedules: a second copy of the CORDIC written out to get a pipelined
-    //! variant would be an open invitation for the two to drift apart.
+    //! Always inlined, ROT left unannotated so callers can schedule it
+    //! differently - avoids a second copy drifting from this one.
     //
     inline void sincos_core(ik_real_t angle, ik_real_t& sin_o,
                             ik_real_t& cos_o) {
@@ -278,34 +239,15 @@ namespace ikm {
         sin_o = negate ? (ik_real_t)(-y) : (ik_real_t)y;
     }
 
-    //! Compute sine and cosine of an angle using CORDIC rotation mode.
-    //!
-    //! Processes one angle at a time with the CORDIC rotation engine rolled to
-    //! 24 iterations. Shared across multiple call sites to avoid code
-    //! duplication of the expensive CORDIC engine.
-    //!
-    //! @param angle Input angle (radians)
-    //! @param sin_o Output sine value
-    //! @param cos_o Output cosine value
     inline void sincos(ik_real_t angle, ik_real_t& sin_o, ik_real_t& cos_o) {
 #pragma HLS INLINE off
         sincos_core(angle, sin_o, cos_o);
     }
 
-    //! Compute sine and cosine for all six joint angles in a pipelined pass.
-    //!
-    //! Computes sin/cos for all IK_DOF angles in a single pipelined loop with
-    //! II=1, producing one result per cycle. This hoisting of all angle
-    //! computations from the DH step chain (where they would serialize six
-    //! 24-cycle CORDIC latencies) into one pipelined pass converts 6×24
-    //! sequential cycles into 6+depth, significantly improving throughput.
-    //!
-    //! Used only by fk_jacobian() (DLS solver path) due to LUT constraints on
-    //! ik_analytic's path, which already uses a separate CORDIC instance.
-    //!
-    //! @param th   Array of six input joint angles (radians)
-    //! @param s    Output array of six sine values
-    //! @param c    Output array of six cosine values
+    //! Pipelined (II=1) sin/cos for all IK_DOF angles: converts 6x24
+    //! sequential CORDIC cycles (as in the DH step chain) into 6+depth.
+    //! Used only by fk_jacobian() (DLS path) - ik_analytic is LUT-constrained
+    //! and already has its own CORDIC instance.
     inline void sincos_batch(const ik_real_t th[IK_DOF], ik_real_t s[IK_DOF],
                              ik_real_t c[IK_DOF]) {
 #pragma HLS INLINE off
@@ -319,16 +261,7 @@ namespace ikm {
         }
     }
 
-    //! Compute arctangent and hypot magnitude using CORDIC vectoring mode.
-    //!
-    //! Uses CORDIC in vectoring mode to compute atan2(y, x) over the full
-    //! circle and the magnitude hypot(x, y) as a free by-product. Both outputs
-    //! are computed from a single CORDIC pass.
-    //!
-    //! @param yi   Input y coordinate
-    //! @param xi   Input x coordinate
-    //! @param ang_o Output angle (atan2(y, x)) in radians
-    //! @param mag_o Output magnitude (hypot(x, y))
+    //! CORDIC vectoring mode: atan2(y, x) and hypot(x, y) from one pass.
     inline void atan2_hypot(ik_real_t yi, ik_real_t xi, ik_real_t& ang_o,
                             ik_real_t& mag_o) {
 #pragma HLS INLINE off  //! shared CORDIC engine - see sincos() above
@@ -367,11 +300,6 @@ namespace ikm {
         mag_o = (ik_real_t)(x * (cordic_t)CORDIC_K_INV);
     }
 
-    //! Compute arctangent of y/x over the full circle.
-    //!
-    //! @param y Input y coordinate
-    //! @param x Input x coordinate
-    //! @return  atan2(y, x) in radians, range [-π, π]
     inline ik_real_t atan2(ik_real_t y, ik_real_t x) {
 #pragma HLS INLINE
         ik_real_t a, m;
@@ -379,11 +307,6 @@ namespace ikm {
         return a;
     }
 
-    //! Compute Euclidean norm (magnitude) of a 2D vector.
-    //!
-    //! @param x Input x coordinate
-    //! @param y Input y coordinate
-    //! @return  sqrt(x² + y²)
     inline ik_real_t hypot(ik_real_t x, ik_real_t y) {
 #pragma HLS INLINE
         ik_real_t a, m;
@@ -391,14 +314,8 @@ namespace ikm {
         return m;
     }
 
-    //! Compute square root using restoring shift-subtract on Q16.16 raw word.
-    //!
-    //! Implements sqrt(a) = isqrt(raw(a) << 16) as pure integer arithmetic,
-    //! ensuring bit-identical results between float and fixed builds. Uses 24
-    //! fixed iterations with no early exit for deterministic latency.
-    //!
-    //! @param a Input value (non-negative)
-    //! @return  sqrt(a) in Q16.16
+    //! sqrt(a) = isqrt(raw(a) << 16), pure integer arithmetic for bit-identical
+    //! results between float and fixed builds. Non-negative a only.
     inline ik_real_t sqrt(ik_real_t a) {
 #pragma HLS INLINE off  //! shared 24-cycle engine - see sincos() above
         if (a <= (ik_real_t)0)
@@ -426,16 +343,9 @@ namespace ikm {
         return ik_from_word((ik_word_t)(uint32_t)res);
     }
 
-    //! Extract raw 64-bit word from an accumulator value.
-    //!
-    //! Helper for sqrt_acc(). Needed because the DLS convergence test cannot be
-    //! done in Q16.16: a tolerance of 1e-3 squares to 1e-6, which is two
-    //! decades below the Q16.16 LSB and would quantise to zero, making the
-    //! solver report convergence on its first iteration.  The residual is
-    //! therefore accumulated in Q32.32 and compared there.
-    //!
-    //! @param a Input accumulator value (Q32.32)
-    //! @return  Raw 64-bit word representation
+    //! Helper for sqrt_acc(). A DLS tolerance of 1e-3 squares to 1e-6, two
+    //! decades below the Q16.16 LSB, so the residual must be accumulated and
+    //! compared in Q32.32 or convergence would falsely report on iteration 1.
     inline uint64_t acc_raw(ik_acc_t a) {
 #pragma HLS INLINE
 #ifdef IK_USE_FLOAT
@@ -450,17 +360,7 @@ namespace ikm {
 #endif
     }
 
-    //! Compute square root of an accumulator-typed value (Q32.32).
-    //!
-    //! Takes a Q32.32 accumulator and produces a Q16.16 output. Needed for DLS
-    //! convergence testing, where tolerance thresholds (e.g., 1e-3) become
-    //! sub-LSB when squared in Q16.16, causing premature convergence reporting.
-    //! By accumulating the residual in Q32.32 and comparing there, full
-    //! precision is preserved. Uses 32 fixed iterations for deterministic
-    //! latency.
-    //!
-    //! @param a Input accumulator value (Q32.32)
-    //! @return  sqrt(a) in Q16.16
+    //! sqrt of a Q32.32 accumulator -> Q16.16. See acc_raw() for why Q32.32.
     inline ik_real_t sqrt_acc(ik_acc_t a) {
 #pragma HLS INLINE off  //! shared 32-cycle engine - see sincos() above
         if (a <= (ik_acc_t)0)
@@ -487,14 +387,8 @@ namespace ikm {
         return ik_from_word((ik_word_t)(uint32_t)res);
     }
 
-    //! Clamp a value to the range [-1, 1].
-    //!
-    //! Used by the analytic solver's law-of-cosines term to ensure valid input
-    //! to trigonometric functions. Guards against rounding errors that might
-    //! push computed cosines slightly outside the [-1, 1] domain.
-    //!
-    //! @param v Input value
-    //! @return  Value clamped to [-1, 1]
+    //! Guards the analytic solver's law-of-cosines term against rounding
+    //! pushing a cosine slightly outside [-1, 1].
     inline ik_real_t clamp1(ik_real_t v) {
 #pragma HLS INLINE
         if (v > (ik_real_t)1)
@@ -504,17 +398,9 @@ namespace ikm {
         return v;
     }
 
-    //! Clamp to [0, inf) ahead of a square root.
-    //!
-    //! The analytic solver's theta1 discriminant, rho^2 - d3^2, is negative
-    //! exactly when the target lies inside the singular cylinder about the
-    //! joint-1 axis.  That case is already reported as IK_ERR_UNREACH, but the
-    //! kernel has no early exit - its latency being a compile-time constant is
-    //! the property under test - so the arithmetic runs to completion either
-    //! way and sqrt() must still be handed something valid.
-    //!
-    //! @param v Input value
-    //! @return  Value clamped to [0, inf)
+    //! Clamps a negative theta1 discriminant (target inside the singular
+    //! cylinder, already reported as IK_ERR_UNREACH) so sqrt() still gets a
+    //! valid input - the kernel has no early exit, latency must stay constant.
     inline ik_real_t clamp_lo0(ik_real_t v) {
 #pragma HLS INLINE
         return v < (ik_real_t)0 ? (ik_real_t)0 : v;

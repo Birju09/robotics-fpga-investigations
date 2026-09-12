@@ -1,39 +1,19 @@
 #!/usr/bin/env python3
 """
-The robot definition layer: one declarative source for the kinematics.
+Declarative robot/DH definition, single source of truth for `ik_model`,
+`gen_geometry`, `gen_vectors`, and `plot_dh`.
 
-Everything downstream reads its geometry from here - `ik_model` for the golden
-model, `gen_geometry` for the C++ header the kernels compile against,
-`gen_vectors` for the workloads, `plot_dh` for the figure.  Before this module
-existed the DH table was a block of module constants in `ik_model.py` and a
-parallel block of `#define`s in `hls/include/ik_config.hpp`, kept in agreement
-by hand.
+`RobotModel` carries `provenance` (which numbers are cited vs. chosen) and
+`analytic_form` assumptions (the zero pattern `iks::analytic()` relies on;
+checked by `check_analytic_form()`), since neither is recoverable from a bare
+table of floats. `from_urdf()` in `urdf_to_dh.py` also produces one of these.
 
-A `RobotModel` carries more than the numbers.  It carries where they came from
-(`provenance`) and what structure a closed-form solver may assume about them
-(`analytic_form`), because both are load-bearing and neither is recoverable
-from a table of floats:
-
-  - Provenance separates a published, citable parameter from a value someone
-    picked.  The two are mixed in any real robot description and a report that
-    cannot tell them apart is overclaiming.
-  - The structural assumptions are what `iks::analytic()` is entitled to rely
-    on.  A closed-form solution is not generic over DH tables; it is derived
-    for a particular pattern of zeros.  `check_analytic_form()` tests that
-    pattern, so a table that silently breaks the solver fails here rather than
-    as wrong joint angles later.
-
-`from_urdf()` in `urdf_to_dh.py` produces one of these, which is the point of
-the split: a URDF-derived robot is not a special case downstream.
-
-Conventions are standard (distal) DH, matching `ik_model.dh_mat()`:
+Standard (distal) DH, matching `ik_model.dh_mat()`:
 
     T_i-1_i = Rz(theta_i + theta_offset_i) Tz(d_i) Tx(a_i) Rx(alpha_i)
 
-Note that d_i translates along z_{i-1}, not z_i.  That is what makes d3 a
-lateral offset perpendicular to the arm plane rather than a length along the
-forearm, and it is the whole reason the offset removes the shoulder
-singularity.
+d_i translates along z_{i-1}, not z_i - that's what makes d3 a lateral offset
+perpendicular to the arm plane, removing the shoulder singularity.
 """
 
 from dataclasses import dataclass, field
@@ -51,7 +31,6 @@ class RobotModel:
     qlim: np.ndarray          # (n, 2) lower/upper joint limits, radians
     provenance: dict = field(default_factory=dict)
 
-    # ---- derived, all read off the table rather than restated ----
     @property
     def dof(self):
         return len(self.a)
@@ -78,11 +57,9 @@ class RobotModel:
 
     @property
     def d3(self):
-        """Lateral shoulder offset, perpendicular to the arm plane.
-
-        Non-zero is what keeps the wrist centre off the joint-1 axis, where
-        theta1 would be undefined; it converts a reachable singularity into an
-        unreachable cylinder of radius |d3|.  See check_analytic_form().
+        """Lateral shoulder offset, perpendicular to arm plane. Non-zero keeps
+        the wrist centre off the joint-1 axis (theta1 undefined there),
+        turning that singularity into an unreachable cylinder of radius |d3|.
         """
         return float(self.d[2])
 
@@ -137,22 +114,17 @@ class AnalyticFormError(ValueError):
 
 def check_analytic_form(rb):
     """
-    Verify the pattern of zeros `iks::analytic()` is derived against.
+    Verify the zero pattern `iks::analytic()` requires: a 6R arm with a
+    spherical wrist (last three axes meet at a point) so position and
+    orientation decouple:
 
-    The closed-form solution is not generic over DH tables.  It requires a
-    6R arm whose last three axes intersect at a point (a spherical wrist), so
-    that position and orientation decouple:
+        a4 = a5 = a6 = 0 and d5 = 0     wrist axes meet
+        alpha4, alpha5 = +-pi/2         mutually perpendicular
+        alpha2 = 0                      shoulder/elbow axes parallel (planar)
+        d2 = 0                          only lateral offset is d3
 
-        a4 = a5 = a6 = 0 and d5 = 0     the three wrist axes meet
-        alpha4, alpha5 = +-pi/2         and meet mutually perpendicular
-        alpha2 = 0                      shoulder and elbow axes parallel,
-                                        which makes joints 2-3 planar
-        d2 = 0                          the only lateral offset is d3
-
-    Raises AnalyticFormError naming the violated assumption.  DLS needs none
-    of this - it differentiates whatever fk_all() computes - so a table that
-    fails here is still usable by ik_dls, and the caller may choose to carry
-    on with the iterative solver alone.
+    Raises AnalyticFormError naming the violated assumption. ik_dls doesn't
+    need any of this, so a table that fails here can still use it.
     """
     if rb.dof != 6:
         raise AnalyticFormError(f"{rb.dof} DOF; the closed form is 6R only")
@@ -184,36 +156,25 @@ def check_analytic_form(rb):
 # ---------------------------------------------------------------------------
 # PUMA 560
 # ---------------------------------------------------------------------------
-# Standard (distal) DH, as tabulated in Corke's Robotics Toolbox `mdl_puma560`
-# and equivalent to the modified-DH table in Craig, "Introduction to Robotics",
-# section 3.6.  The arm was designed in inches and the canonical values are
-# exact conversions, which is a useful check that a table has not been
-# corrupted in transcription:
+# Standard DH per Corke's Robotics Toolbox `mdl_puma560` (== Craig sec. 3.6).
+# Designed in inches; canonical values are exact conversions, a useful
+# transcription check:
+#     a2 = 431.8 mm = 17.00 in   a3 = 20.32 mm = 0.80 in
+#     d3 = 149.09 mm = 5.87 in   d4 = 433.07 mm = 17.05 in
 #
-#     a2 = 431.8 mm  = 17.00 in
-#     a3 =  20.32 mm =  0.80 in
-#     d3 = 149.09 mm =  5.87 in
-#     d4 = 433.07 mm = 17.05 in
-#
-# d1 and d6 are NOT part of that kinematic table, where both are zero: the
-# canonical table places frame 0 at the shoulder and the tool point at the
-# wrist centre.  They are added here, and flagged as additions in
-# `provenance`, because this project needs a mounting face to measure poses
-# against and a non-degenerate approach axis for the orientation half of the
-# IK problem to mean anything.  Quoting them as PUMA parameters would be
-# wrong; they are this project's, applied to PUMA's arm.
+# d1, d6 are NOT in the canonical table (both zero there: frame 0 at shoulder,
+# tool point at wrist centre). Added here (flagged in `provenance`) so poses
+# have a mounting face and the orientation IK is non-degenerate - they are
+# this project's additions, not PUMA parameters.
 PUMA560 = RobotModel(
     name="PUMA 560",
     a=np.array([0.0, 0.4318, 0.0203, 0.0, 0.0, 0.0]),
     alpha=np.array([np.pi / 2, 0.0, -np.pi / 2, np.pi / 2, -np.pi / 2, 0.0]),
     d=np.array([0.6718, 0.0, 0.15005, 0.4318, 0.0, 0.0565]),
     theta_offset=np.zeros(6),
-    # Manufacturer joint limits, degrees, as tabulated by Corke.  Asymmetric,
-    # unlike the symmetric +-limits this project used before, and that
-    # asymmetry is real: the elbow cannot swing equally both ways.  They also
-    # do the job a collision model would otherwise have to - the q3 range is
-    # what stops the forearm folding back onto the upper arm, which bare link
-    # lengths permit (reach_inner is only 19 mm).
+    # Manufacturer limits (Corke), asymmetric (real: elbow doesn't swing
+    # equally both ways). q3's range also substitutes for a collision model -
+    # it stops the forearm folding onto the upper arm (reach_inner = 19 mm).
     qlim=np.radians(np.array([
         [-160.0, 160.0],
         [-225.0, 45.0],
@@ -239,9 +200,7 @@ PUMA560 = RobotModel(
     },
 )
 
-# What the rest of the tree uses.  Single assignment, so retargeting the
-# project at another arm - including one returned by urdf_to_dh.from_urdf() -
-# is this line.
+# Single assignment: retargeting the project at another arm is this line.
 ROBOT = PUMA560
 
 

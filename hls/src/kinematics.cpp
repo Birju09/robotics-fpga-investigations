@@ -2,24 +2,14 @@
 
 #include "ik_math.hpp"
 
-//! ------------------------------------------------------------------
-//! One standard-DH step:  [R|p] <- [R|p] * A_i(theta)
-//!
-//! [ ct  -st*ca   st*sa   a*ct ]
-//! A_i =  [ st   ct*ca  -ct*sa   a*st ]
-//! [ 0    sa      ca      d    ]
-//!
-//! cos/sin of alpha_i are tabulated (they are exactly 0 or +-1), so
-//! only one CORDIC call is needed per joint rather than two.
-//! ------------------------------------------------------------------
+//! One standard-DH step: [R|p] <- [R|p] * A_i(theta).
+//! alpha_i's cos/sin are tabulated (exactly 0 or +-1), so only one CORDIC
+//! call is needed per joint.
 //
-//! Split in two: the frame update proper, which takes sin/cos already
-//! computed, and a convenience wrapper that computes them first.
-//
-//! fk_jacobian() uses the former with ikm::sincos_batch(), because the six
-//! CORDIC evaluations are independent of the chain and do not belong on its
-//! critical path.  fk() and rot03() keep the wrapper - they are on
-//! ik_analytic's path, which has no LUT budget for a second CORDIC instance.
+//! Split into frame-update (sin/cos precomputed) and a wrapper that computes
+//! them. fk_jacobian() uses the former via ikm::sincos_batch() to keep the
+//! six CORDIC evals off its critical path; fk()/rot03() use the wrapper -
+//! no LUT budget there for a second CORDIC instance.
 //
 static void dh_step_sc(int i, ik_real_t st, ik_real_t ct, ik_real_t R[3][3],
                        ik_real_t p[3]) {
@@ -45,13 +35,10 @@ static void dh_step_sc(int i, ik_real_t st, ik_real_t ct, ik_real_t R[3][3],
     ap[1] = (ik_real_t)(a * st);
     ap[2] = d;
 
-    //! p <- p + R * ap   (must use the pre-update R)
+    //! p <- p + R * ap (must use pre-update R)
     //
-    //! II=1 with the inner reduction unrolled: three multipliers, three
-    //! cycles.  This was fully rolled back when the budget was 126% of the
-    //! DSPs and every multiplier had to be justified; with the chain's CORDIC
-    //! latency now hoisted out by sincos_batch(), these two products became
-    //! the largest remaining term in a DH step.  See ik_config.hpp.
+    //! II=1, inner reduction unrolled: 3 multipliers, 3 cycles. See
+    //! ik_config.hpp for the DSP-budget history behind this choice.
     ik_real_t np[3];
 DH_P:
     for (int r = 0; r < 3; r++) {
@@ -64,9 +51,7 @@ DH_P:
         np[r] = (ik_real_t)acc;
     }
 
-    //! R <- R * AR.  Nine dot products of three terms; at II=1 with k
-    //! unrolled that is nine cycles against twenty-seven rolled, sharing the
-    //! same three multipliers as DH_P above since the two never overlap.
+    //! R <- R * AR. Shares the 3 multipliers from DH_P above (loops don't overlap).
     ik_real_t nR[3][3];
 DH_R:
     for (int r = 0; r < 3; r++) {
@@ -126,9 +111,9 @@ void ikk::rpy_to_rot(ik_real_t roll, ik_real_t pitch, ik_real_t yaw,
 void ikk::rot_to_rpy(const ik_real_t R[3][3], ik_real_t rpy[3]) {
 #pragma HLS INLINE off
     ik_real_t cyp = ikm::hypot(R[0][0], R[1][0]);
-    rpy[0] = ikm::atan2(R[2][1], R[2][2]);            //! roll
-    rpy[1] = ikm::atan2((ik_real_t)(-R[2][0]), cyp);  //! pitch
-    rpy[2] = ikm::atan2(R[1][0], R[0][0]);            //! yaw
+    rpy[0] = ikm::atan2(R[2][1], R[2][2]);            // roll
+    rpy[1] = ikm::atan2((ik_real_t)(-R[2][0]), cyp);  // pitch
+    rpy[2] = ikm::atan2(R[1][0], R[0][0]);            // yaw
 }
 
 //! ------------------------------------------------------------------
@@ -144,11 +129,8 @@ FK_I:
         }
     }
 FK_CHAIN:
-    //! Vitis HLS auto-pipelines small loops with no explicit directive, and
-    //! pipelining this one would force dh_step()'s already-rolled internal
-    //! matrix multiply to flatten (fully unroll) to fit the schedule -
-    //! exactly the resource explosion the rolling fix was for. Keep it
-    //! sequential explicitly rather than relying on the tool's default.
+    //! PIPELINE off explicitly: default auto-pipelining would force dh_step()'s
+    //! rolled matrix multiply to fully unroll, undoing the DSP-saving rolling.
     for (int i = 0; i < IK_DOF; i++) {
 #pragma HLS PIPELINE off
         dh_step(i, q[i], R, p);
@@ -173,7 +155,7 @@ R3_I:
         }
     }
 R3_CHAIN:
-    for (int i = 0; i < 3; i++) {  //! PIPELINE off - see fk()'s FK_CHAIN
+    for (int i = 0; i < 3; i++) {  // PIPELINE off - see fk()'s FK_CHAIN
 #pragma HLS PIPELINE off
         dh_step(i, th[i], R, p);
     }
@@ -198,22 +180,17 @@ JC_I:
         }
     }
 
-//! Joint i rotates about z_{i-1}, anchored at o_{i-1}: capture the frame
-//! BEFORE applying step i.
+//! Joint i rotates about z_{i-1} anchored at o_{i-1}: capture frame BEFORE step i.
 #if IK_BATCH_CORDIC
-    //! All six CORDIC evaluations up front, pipelined.  They depend only on
-    //! q, not on the chain, so leaving them inside JC_CHAIN put six serial
-    //! CORDIC latencies on a critical path that had no need of them.
-    //
-    //! Off by default: it is the most expensive of the recent optimisations
-    //! in LUTs and the cheapest in cycles, and this kernel overflowed the
-    //! part by 293 LUTs with it on.  See ik_config.hpp.
+    //! CORDIC evals depend only on q, not the chain - batching them here keeps
+    //! their latency off JC_CHAIN's critical path. Off by default: overflows
+    //! the part by 293 LUTs when on. See ik_config.hpp.
     ik_real_t sq[IK_DOF], cq[IK_DOF];
     ikm::sincos_batch(q, sq, cq);
 #endif
 
 JC_CHAIN:
-    for (int i = 0; i < IK_DOF; i++) {  //! PIPELINE off - see fk()'s FK_CHAIN
+    for (int i = 0; i < IK_DOF; i++) {  // PIPELINE off - see fk()'s FK_CHAIN
 #pragma HLS PIPELINE off
         zax[i][0] = Rc[0][2];
         zax[i][1] = Rc[1][2];
@@ -240,10 +217,8 @@ JC_COPY:
 
     //! Jv_i = z_i x (p_e - o_i),  Jw_i = z_i
 JC_COLS:
-    //! II=3, not 1.  Six cross-product multiplies per column at II=1 are six
-    //! multipliers; at II=3 they are two, shared.  fk_jacobian() is called
-    //! only from ik_dls, so this does not affect ik_analytic_kernel.  See the
-    //! resource/latency note in ik_config.hpp.
+    //! II=3: 2 shared multipliers instead of 6. Only affects ik_dls_kernel
+    //! (fk_jacobian isn't called from ik_analytic). See ik_config.hpp.
     for (int i = 0; i < IK_DOF; i++) {
 #pragma HLS PIPELINE II = 3
         ik_real_t dx = (ik_real_t)((ik_acc_t)p[0] - (ik_acc_t)org[i][0]);
@@ -273,8 +248,7 @@ PE_POS:
         e[r] = (ik_real_t)((ik_acc_t)pd[r] - (ik_acc_t)pc[r]);
     }
 
-//! eo = 0.5 * sum over the three column pairs of (current x desired),
-//! rolled - see dh_step()'s DH_P/DH_R in this file.
+//! eo = 0.5 * sum over the three column pairs of (current x desired)
 PE_ROT:
     for (int r = 0; r < 3; r++) {
         int a = (r + 1) % 3;

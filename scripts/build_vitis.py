@@ -9,15 +9,11 @@ Run with the Vitis Python interpreter, not a system one:
 
 Produces build/vitis/ik_app/build/ik_app.elf.
 
-Component creation and build go through the Vitis Python API.  Source files
-are copied in with shutil rather than through the API's import helper: the
-helper's name and signature have moved between releases, while a file copy into
-the component's src directory works the same way in all of them.
-
-Both components are deleted and recreated on every run.  The platform caches
-the hardware handoff from the XSA it was created against, so reusing one after
-a Vivado rebuild would silently compile the application against the previous
-bitstream's xparameters.h.
+Sources are staged with shutil, not the API's import helper, since the
+helper's name/signature has moved between releases. Both components are
+deleted and recreated every run: the platform caches the hardware handoff
+from its XSA, so reusing one after a Vivado rebuild would silently compile
+against the previous bitstream's xparameters.h.
 """
 
 import argparse
@@ -92,13 +88,10 @@ def stage_sources(dest):
 
 
 def report_kernel_xpar(workspace):
-    """Print the XPAR_* base-address macros the platform actually generated.
+    """Print the XPAR_* base-address macros the platform generated.
 
-    main.c resolves each kernel's base address through a #if cascade over the
-    spellings xparameters.h has used across releases, and stops with #error if
-    none match.  That error can only say what it did not find, so print what is
-    really there - it is the one piece of information needed to fix it, and it
-    costs a grep of a file the platform build just wrote.
+    main.c's #if cascade over known xparameters.h spellings can only say
+    what it didn't find if none match; this prints what's actually there.
     """
     hits = []
     for dirpath, _dirs, files in os.walk(workspace):
@@ -126,15 +119,9 @@ def report_kernel_xpar(workspace):
 
 
 def drop_component(client, workspace, name):
-    """Remove a component left behind by an earlier run, if there is one.
-
-    Re-running the script otherwise dies with ALREADY_EXISTS on the first
-    create_*_component call.  Rebuilding rather than reusing is the deliberate
-    choice: a platform component caches the hardware handoff from the XSA it
-    was created against, so reusing one after a Vivado rebuild would compile
-    the application against the previous bitstream's xparameters.h.  That
-    failure is silent and produces AXI writes to addresses no kernel answers -
-    much worse than the seconds a rebuild costs.
+    """Remove a component left from an earlier run (else create_*_component
+    dies with ALREADY_EXISTS). Rebuilding avoids silently compiling against a
+    stale xparameters.h after a Vivado rebuild.
     """
     path = os.path.join(workspace, name)
     if not os.path.isdir(path):
@@ -144,8 +131,7 @@ def drop_component(client, workspace, name):
         client.delete_component(name=name)
         return
     except Exception as e:                             # noqa: BLE001
-        # The API name has moved between releases; the directory is the thing
-        # that actually holds the state, so fall back to removing it.
+        # API name has moved between releases; fall back to removing the dir.
         print("    (delete_component failed: %s - removing the directory)" % e)
     shutil.rmtree(path, ignore_errors=True)
 
@@ -212,21 +198,12 @@ def main():
     app_src = os.path.join(args.workspace, APP, "src")
     stage_sources(app_src)
 
-    # Include path for the shared kernel headers, and the float switch that
-    # makes the PS build compile the same sources the PL kernels use.
-    #
-    # An absolute path, not '${_ide_ws}/...': that variable is substituted by
-    # the Vitis IDE, but the 2025.2 CMake build passes the flag string through
-    # verbatim, so it expanded to nothing and the compiler was handed
-    # '-I/ik_app/src/include'.  Every kernel .cpp then failed to find its own
-    # header while the error pointed at the source file rather than the flag.
-    #
-    # The two -Wno- flags turn off warnings about the HLS loop labels and
-    # #pragma HLS directives that carry the whole design intent under
-    # synthesis and mean nothing to a host compiler.  There are enough of them
-    # to bury a real diagnostic: the run that first linked this application
-    # emitted over five hundred lines of them around a single undefined
-    # reference.  Nothing else is suppressed.
+    # Absolute include path, not '${_ide_ws}/...': the 2025.2 CMake build
+    # doesn't substitute that variable, so it expanded to nothing and every
+    # kernel .cpp failed to find its own header (error pointed at the wrong
+    # place). The -Wno- flags suppress HLS pragma/label warnings that mean
+    # nothing to a host compiler and previously buried a real diagnostic
+    # under 500+ lines of noise.
     flags = ('-I%s -DIK_USE_FLOAT -O2 -Wno-unused-label -Wno-unknown-pragmas'
              % os.path.join(app_src, "include"))
     for key, val in (("USER_COMPILE_OTHER_FLAGS", flags),

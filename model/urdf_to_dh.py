@@ -2,36 +2,16 @@
 """
 Derive a standard-DH RobotModel from a URDF.
 
-URDF describes a robot as a tree of links joined by transforms: each joint
-carries a fixed origin (xyz + rpy, parent link frame to joint frame) and a
-rotation axis expressed in that joint frame.  It places frames wherever the
-CAD happened to put them.  DH places frames where the geometry says they must
-go - z on the joint axis, x along the common normal between consecutive axes -
-and buys, in exchange for that rigidity, four parameters per joint instead of
-six.  This module performs that re-framing.
+URDF places frames wherever the CAD put them; DH places frames where the
+geometry requires (z on the joint axis, x along the common normal between
+consecutive axes), trading six parameters per joint for four.
 
-    urdf -> joint chain -> axis lines at q = 0 -> common-normal construction
-         -> (a, alpha, d, theta_offset) + base and tool transforms
-
-Two things are worth saying plainly before relying on the output.
-
-**DH parameters are not unique.**  Axis directions may be flipped, and where
-consecutive axes are parallel the common normal is undetermined and a
-convention has to be imposed.  Two correct converters can therefore disagree
-on the numbers while describing the same arm.  Comparing tables is not a valid
-test; comparing forward kinematics is.  `verify()` does the latter and
-`from_urdf()` calls it, so a conversion either reproduces the URDF's own FK to
-tolerance or raises.
-
-**A general URDF is not expressible in DH at all.**  DH describes a serial
-chain of revolute/prismatic joints; a tree, a closed loop, or a joint whose
-axis does not admit a common normal with its neighbour has no DH form.  Those
-cases raise `UrdfConversionError` rather than returning something plausible.
-
-Prismatic joints are parsed and rejected: the rest of this project - the
-analytic solver, the fixed-point format, the Jacobian - assumes six revolute
-joints throughout, so accepting them here would produce a model nothing
-downstream could consume.
+DH parameters are not unique (axis flips, parallel-axis convention), so
+`verify()` checks FK equivalence rather than comparing tables - `from_urdf()`
+either reproduces the URDF's own FK to tolerance or raises
+`UrdfConversionError`. Trees, closed loops, and axes with no common normal
+have no DH form and raise too. Prismatic joints are rejected outright: the
+rest of this project assumes six revolute joints throughout.
 
 Self-test:  python3 model/urdf_to_dh.py
 """
@@ -46,14 +26,12 @@ import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from robot import RobotModel  # noqa: E402
 
-#: Two axis directions closer than this in the cross-product norm are treated
-#: as parallel, which is a separate construction case rather than a numerical
-#: nuisance: the common normal between parallel axes is undetermined and the
-#: convention below has to pick one.
+#: Axes closer than this (cross-product norm) are treated as parallel - a
+#: separate construction case, since the common normal is then undetermined.
 PARALLEL_EPS = 1e-9
 
-#: Below this, a common normal has zero length and the axes are taken to
-#: intersect (a = 0), so x is chosen from the cross product alone.
+#: Below this, axes are taken to intersect (a = 0); x comes from the cross
+#: product alone.
 LENGTH_EPS = 1e-9
 
 
@@ -137,10 +115,9 @@ def joint_chain(joints, base=None, tip=None):
     """
     The ordered joint list from `base` to `tip`.
 
-    Defaults walk the unique serial path: base is the link that is never a
-    child, tip the link that is never a parent.  A tree has more than one such
-    tip, and there is no DH form for a tree, so that raises here rather than
-    silently converting one arbitrary branch.
+    Defaults: base is the link that's never a child, tip the one never a
+    parent. A tree has multiple such tips and no DH form, so that raises
+    rather than silently converting one arbitrary branch.
     """
     children = {j.child for j in joints.values()}
     parents = {j.parent for j in joints.values()}
@@ -181,12 +158,11 @@ def joint_chain(joints, base=None, tip=None):
 
 def axis_lines(chain):
     """
-    Each movable joint's axis as a line (point, unit direction) at q = 0,
-    in the base link frame, with the fixed joints folded into the transforms
-    on either side.
+    Each movable joint's axis as a line (point, unit direction) at q=0, in
+    the base link frame; fixed joints folded into the transforms either side.
 
-    Returns (lines, T_tip): T_tip is the base-to-tip transform at q = 0, which
-    the tool frame is measured against.
+    Returns (lines, T_tip): T_tip is the base-to-tip transform at q=0, used
+    to measure the tool frame against.
     """
     T = np.eye(4)
     lines = []
@@ -196,9 +172,8 @@ def axis_lines(chain):
             continue
         if j.jtype in ("prismatic", "planar", "floating"):
             raise UrdfConversionError(
-                f"joint '{j.name}' is '{j.jtype}'; this project's solvers, "
-                "fixed-point format and Jacobian all assume revolute joints "
-                "throughout, so a prismatic chain has no usable output here")
+                f"joint '{j.name}' is '{j.jtype}'; this project assumes "
+                "revolute joints throughout")
         if j.jtype not in ("revolute", "continuous"):
             raise UrdfConversionError(
                 f"joint '{j.name}' has unknown type '{j.jtype}'")
@@ -221,21 +196,18 @@ def common_normal(p0, z0, p1, z1):
     """
     The common normal from line (p0, z0) to line (p1, z1).
 
-    Returns (a, x, foot0), where `a` is its length, `x` its unit direction
-    pointing from the first line to the second, and `foot0` the point where it
-    meets the first line.
+    Returns (a, x, foot0): `a` its length, `x` unit direction from the first
+    line to the second, `foot0` where it meets the first line.
 
-    Three cases, and they are cases rather than one formula with a guard:
+    Three distinct cases, not one formula with a guard:
 
-    skew         the generic one; x is the normalised cross product and the
-                 feet come from solving the two-line closest-approach system.
-    intersecting the cross product still fixes x, but a = 0 and the foot is
-                 the intersection point.
-    parallel     the cross product vanishes and the common normal is NOT
-                 unique - every perpendicular between the lines has the same
-                 length.  The universal convention, and the one taken here, is
-                 to choose the normal through p0, which is what makes d_i come
-                 out as zero rather than arbitrary for a parallel pair.
+    skew         generic; x from normalised cross product, feet from the
+                 two-line closest-approach system.
+    intersecting cross product still fixes x, but a = 0, foot = intersection.
+    parallel     cross product vanishes; the normal is NOT unique (every
+                 perpendicular between the lines has equal length). Convention
+                 here: normal through p0, which makes d_i zero rather than
+                 arbitrary for a parallel pair.
     """
     cz = np.cross(z0, z1)
     n = np.linalg.norm(cz)
@@ -261,11 +233,9 @@ def dh_from_axes(lines, T_tip):
     """
     Standard-DH parameters for a chain of joint axes.
 
-    Frame i-1 has z on joint i's axis, so the construction walks pairs of
-    consecutive axes.  The last frame has no successor axis to build a common
-    normal against; its z is carried over from the previous joint and its
-    origin placed at the tip, which is the convention that puts the tool
-    offset in d_n where the rest of this project expects it.
+    Frame i-1 has z on joint i's axis, so construction walks consecutive axis
+    pairs. The last frame has no successor axis; its z carries over and its
+    origin is placed at the tip, putting the tool offset in d_n.
 
     Returns (a, alpha, d, theta_offset, T_base, T_tool).
     """
@@ -285,20 +255,17 @@ def dh_from_axes(lines, T_tip):
         xs[i] = x_i
         origins[i] = foot0 + a_i * x_i        # on axis i, i.e. z_i
 
-    # Frame 0: z0 is joint 1's axis; x0 is free.  Aligning it with x1 makes
-    # theta_offset_1 zero, which is what a hand-written table would do, and
-    # putting O0 at the foot of x1 on z0 makes d1 the base offset.
+    # Frame 0: z0 is joint 1's axis, x0 free. Aligning with x1 zeroes
+    # theta_offset_1 (as a hand-written table would); O0 at the foot of x1 on
+    # z0 makes d1 the base offset.
     xs[0] = xs[1].copy()
     _, _, origins[0] = common_normal(p[0], z[0], p[1], z[1])
 
-    # Last frame: there is no next axis to build a common normal against, so
-    # z_n carries over and the origin goes to the tip.  x_n must then point
-    # from z_{n-1} TOWARDS the tip - specifically along the component of the
-    # tool offset perpendicular to z_{n-1} - because that perpendicular part
-    # is a_n, and a_n is expressed in x_n.  Copying x_{n-1} instead is correct
-    # only when the tool sits on the axis; the parallel-axis case in the
-    # self-test has a tool offset perpendicular to it and catches the error as
-    # a position discrepancy of exactly a_n.
+    # Last frame: no next axis, so z_n carries over and origin goes to the
+    # tip. x_n must point from z_{n-1} towards the tip along the component of
+    # the tool offset perpendicular to z_{n-1} (that component is a_n,
+    # expressed in x_n) - copying x_{n-1} is only correct if the tool sits on
+    # the axis.
     z.append(z[n - 1].copy())
     origins[n] = T_tip[:3, 3].copy()
     off = origins[n] - origins[n - 1]
@@ -378,13 +345,9 @@ def urdf_fk(chain, q):
 def verify(rb, chain, T_base, T_tool, n=200, tol=1e-9, seed=0):
     """
     Compare DH forward kinematics against the URDF's own, over random
-    configurations.
-
-    This is the only meaningful correctness test for a DH conversion.  DH
-    parameters are not unique - axis flips and the parallel-axis convention
-    both admit different tables for the same arm - so asserting on the numbers
-    would fail correct conversions.  Asserting that the two chains put the tool
-    in the same place cannot.
+    configurations. The only meaningful correctness test here - since DH
+    tables aren't unique, asserting on FK agreement (not the numbers) is what
+    can't reject a correct conversion.
 
     Returns the worst (position, rotation) deviation; raises past `tol`.
     """
@@ -409,13 +372,10 @@ def from_urdf(path, base=None, tip=None, name=None, verify_tol=1e-9):
     """
     Build a RobotModel from a URDF file.
 
-    Verifies the result against the URDF's own forward kinematics before
-    returning it, so the caller receives either a conversion that reproduces
-    the source or an exception - never an unchecked table.
-
-    The returned model carries `T_base` and `T_tool` in `provenance`: a DH
-    chain generally cannot absorb the URDF's base and tool frames, and
-    silently dropping them would move the robot.
+    Verifies against the URDF's own FK before returning - caller gets either
+    a conversion that reproduces the source or an exception, never an
+    unchecked table. `T_base`/`T_tool` are carried in `provenance` since a DH
+    chain generally can't absorb them, and dropping them would move the robot.
     """
     joints, _links, robot_name = parse_urdf(path)
     chain = joint_chain(joints, base, tip)
@@ -447,12 +407,10 @@ def from_urdf(path, base=None, tip=None, name=None, verify_tol=1e-9):
 # ---------------------------------------------------------------------------
 def to_urdf(rb, path, T_base=None):
     """
-    Write a URDF describing the same kinematics as `rb`.
-
-    Used to build the round-trip corpus below.  The construction relies on
-    T_i-1_i(q) = Rz(q + off_i) * C_i with C_i = Tz(d) Tx(a) Rx(alpha): C_i is
-    constant, so it becomes the ORIGIN of joint i+1, and each joint itself is a
-    bare rotation about z.  C_n goes on a final fixed joint to the tip.
+    Write a URDF describing the same kinematics as `rb`, for the round-trip
+    corpus below. T_i-1_i(q) = Rz(q + off_i) * C_i with C_i = Tz(d) Tx(a)
+    Rx(alpha): C_i is constant so it becomes joint i+1's ORIGIN, each joint is
+    a bare rotation about z, and C_n goes on a final fixed joint to the tip.
     """
     def xyz_rpy(T):
         R = T[:3, :3]
@@ -506,10 +464,9 @@ def _self_test():
     """
     Round-trip corpus: DH table -> URDF -> DH table, checked on FK.
 
-    Building the corpus from known tables rather than collecting real URDFs
-    keeps the test hermetic and, more usefully, lets it cover the awkward
-    cases on purpose - parallel axes, intersecting axes, zero link lengths -
-    which is where a common-normal construction actually breaks.
+    Built from known tables rather than real URDFs so it can deliberately
+    cover the awkward cases - parallel axes, intersecting axes, zero link
+    lengths - where a common-normal construction actually breaks.
     """
     import tempfile
     from robot import PUMA560

@@ -4,15 +4,12 @@
 #include "kinematics.hpp"
 #include "tb_common.hpp"
 
-//
-//! DLS is not checked against the golden joint vector directly - two solvers
-//! that both converge can legitimately land on different branches, and the
-//! hardware wraps its joint state while the model does not.  What must hold is
+//! DLS isn't checked against the golden joint vector - two solvers that both
+//! converge can legitimately land on different branches. What must hold is
 //! that the pose is reached.
 //
-//! The iteration histogram printed at the end is the actual deliverable: it is
-//! the latency distribution the real-time analysis is built on.
-//
+//! The iteration histogram is the real deliverable: the latency
+//! distribution the real-time analysis is built on.
 int main() {
     std::ifstream f = tb_open("ik_dls.txt");
     int nvec = 0;
@@ -90,7 +87,6 @@ int main() {
     if (converged < total)
         rc = 1;
 
-    //! Iteration distribution -> latency distribution.
     int mn = 1 << 30, mx = 0, sum = 0, cnt = 0;
     std::vector<int> all;
     for (int i = 0; i < (int)hist.size(); i++)

@@ -1,11 +1,8 @@
 #include "kinematics.hpp"
 #include "tb_common.hpp"
 
-//
-//! Forward kinematics and the RPY <-> rotation pair.  These sit underneath both
-//! solvers, so a convention slip here would show up as a confusing failure two
-//! layers up - worth pinning independently.
-//
+//! FK and RPY<->rotation sit underneath both solvers; a convention slip
+//! here would surface as a confusing failure two layers up.
 int main() {
     std::ifstream f = tb_open("fk.txt");
     int nvec = 0;
@@ -43,8 +40,7 @@ int main() {
             pos.note(std::fabs((double)p[i] - gold[i * 4 + 3]), TOL_POS);
         }
 
-        //! Round trip the orientation through the pose representation the PS
-        //! actually sends.
+        //! Round-trips through the pose representation the PS actually sends.
         ik_real_t a[3], R2[3][3];
         ikk::rot_to_rpy(R, a);
         ikk::rpy_to_rot(a[0], a[1], a[2], R2);

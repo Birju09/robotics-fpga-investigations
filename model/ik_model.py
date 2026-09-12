@@ -2,10 +2,9 @@
 """
 Floating-point golden model for the 6-DOF IK kernels.
 
-This module is the single source of truth for the kinematic conventions used by
-the HLS implementation.  Every equation implemented in `hls/src/*.cpp` is first
-validated here, and the C++ testbenches are checked against vectors emitted by
-`gen_vectors()`.
+Single source of truth for the kinematic conventions used by the HLS
+implementation. Every equation in `hls/src/*.cpp` is validated here first,
+and the C++ testbenches are checked against vectors from `gen_vectors()`.
 
 Robot: 6R anthropomorphic arm with a spherical wrist (PUMA-style), standard
 (distal) Denavit-Hartenberg parameters:
@@ -27,9 +26,8 @@ import numpy as np
 from robot import ROBOT, check_analytic_form
 
 # ---------------------------------------------------------------------------
-# Robot geometry (metres), taken from the definition layer rather than
-# restated.  hls/include/ik_geometry.hpp is generated from the same object by
-# model/gen_geometry.py, so the C++ constants cannot drift from these.
+# Robot geometry (metres). hls/include/ik_geometry.hpp is generated from the
+# same object by model/gen_geometry.py, so the C++ constants can't drift.
 # ---------------------------------------------------------------------------
 DH_A = ROBOT.a
 DH_ALPHA = ROBOT.alpha
@@ -37,17 +35,15 @@ DH_D = ROBOT.d
 
 D1, A1, A2, A3, D4, D6 = (ROBOT.d1, ROBOT.a1, ROBOT.a2, ROBOT.a3, ROBOT.d4,
                           ROBOT.d6)
-#: Lateral shoulder offset, perpendicular to the arm plane.  Non-zero here
-#: (PUMA 560's 149.09 mm), which is what keeps the wrist centre off the
-#: joint-1 axis where theta1 would be undefined.
+#: Lateral shoulder offset (PUMA 560's 149.09 mm). Keeps the wrist centre off
+#: the joint-1 axis where theta1 would be undefined.
 D3 = ROBOT.d3
 
-# Derived constants used by the closed-form solution.
 L3 = ROBOT.L3                       # effective forearm length
 PHI = ROBOT.phi                     # forearm offset angle
 
-# The closed form below is derived against a particular pattern of zeros, not
-# against DH tables in general.  Fail here rather than as wrong joint angles.
+# The closed form below assumes a particular pattern of DH zeros, not DH
+# tables in general - fail here rather than as wrong joint angles.
 check_analytic_form(ROBOT)
 
 
@@ -138,14 +134,13 @@ def ik_analytic(T, shoulder=+1, elbow=+1, wrist=+1):
     """
     Closed-form IK for one of the eight branches.
 
-    shoulder: sign of the sqrt in the theta1 offset term; the two values are
-              the lefty/righty pair, which for an offset shoulder are NOT
-              simply pi apart the way they are on a zero-offset arm
+    shoulder: sign of the sqrt in the theta1 offset term - lefty/righty, NOT
+              simply pi apart here since the shoulder is offset
     elbow   : sign of sin(gamma)
-    wrist   : +1 -> theta5 >= 0;  -1 -> the flipped wrist solution
+    wrist   : +1 -> theta5 >= 0;  -1 -> flipped wrist solution
 
-    Returns (q, ok).  `ok` is False when the target is out of reach, which now
-    includes being inside the singular cylinder (see step 2).
+    Returns (q, ok); ok is False when unreachable, including inside the
+    singular cylinder (step 2).
     """
     R = T[:3, :3]
     p = T[:3, 3]
@@ -155,21 +150,20 @@ def ik_analytic(T, shoulder=+1, elbow=+1, wrist=+1):
 
     # 2. Base rotation, with the lateral shoulder offset.
     #
-    # Because d3 translates along z2 (which is parallel to z1), joints 2 and 3
-    # move the wrist centre in a plane held a fixed distance d3 off the
-    # joint-1 axis.  That gives an exact invariant, independent of q2..q6:
+    # d3 translates along z2 (parallel to z1), so joints 2/3 move the wrist
+    # centre in a plane held a fixed distance d3 off the joint-1 axis - an
+    # exact invariant independent of q2..q6:
     #
     #     pc_x sin(t1) - pc_y cos(t1) = d3
     #
-    # whose solutions are t1 = atan2(pc_y, pc_x) + atan2(d3, +-sqrt(rho^2 -
-    # d3^2)).  The two signs are the two shoulder configurations.
+    # solved by t1 = atan2(pc_y, pc_x) + atan2(d3, +-sqrt(rho^2 - d3^2)), the
+    # two signs being the two shoulder configurations.
     #
-    # The radicand is also the reachability test that the zero-offset version
-    # of this solver did not need: rho < |d3| puts the target inside a
-    # cylinder of radius |d3| about the joint-1 axis that the arm cannot
-    # enter.  That cylinder is the whole point of the offset.  Without it the
-    # wrist centre can sit exactly on the joint-1 axis, where t1 is undefined
-    # and atan2(0, 0) quietly returns zero instead of failing.
+    # The radicand also gives the reachability test a zero-offset arm doesn't
+    # need: rho < |d3| puts the target inside an unreachable cylinder of
+    # radius |d3| about the joint-1 axis. Without this check, the wrist
+    # centre landing exactly on that axis makes t1 undefined and atan2(0,0)
+    # quietly return zero instead of failing.
     rho_sq = pc[0] * pc[0] + pc[1] * pc[1]
     disc = rho_sq - D3 * D3
     if disc < 0.0:
@@ -180,9 +174,8 @@ def ik_analytic(T, shoulder=+1, elbow=+1, wrist=+1):
     # 3. Planar 2-link sub-problem in the frame-1 (x1, y1) plane.
     #    u = a2*c2 + L3*cos(beta),  w = a2*s2 + L3*sin(beta),  beta = t2 + t3 + PHI
     #
-    # u is the in-plane radial coordinate, and it carries the shoulder branch
-    # implicitly: the lefty solution simply produces a negative u.  The old
-    # zero-offset code had to apply the branch sign to the radius by hand.
+    # u carries the shoulder branch implicitly (lefty solution -> negative u),
+    # unlike a zero-offset arm which must apply the branch sign by hand.
     u = pc[0] * np.cos(t1) + pc[1] * np.sin(t1) - A1
     w = pc[2] - D1
 
@@ -192,9 +185,8 @@ def ik_analytic(T, shoulder=+1, elbow=+1, wrist=+1):
     sin_g = elbow * np.sqrt(max(0.0, 1.0 - cos_g * cos_g))
 
     gamma = np.arctan2(sin_g, cos_g)
-    # theta3 = gamma - PHI, not gamma + PHI: alpha3 is -pi/2 on this arm, which
-    # flips the sense of the elbow offset.  Verified against fk() rather than
-    # assumed - see the round-trip assertions in validate.py.
+    # theta3 = gamma - PHI, not gamma + PHI: alpha3 = -pi/2 here flips the
+    # sense of the elbow offset. Verified against fk(), see validate.py.
     t3 = wrap_pi(gamma - PHI)
     t2 = wrap_pi(np.arctan2(w, u) - np.arctan2(L3 * sin_g, A2 + L3 * cos_g))
 
@@ -202,20 +194,18 @@ def ik_analytic(T, shoulder=+1, elbow=+1, wrist=+1):
     #
     #     R_3_6 = Rz(t4) Ry(-t5) Rz(t6)
     #
-    # - a ZYZ Euler set in which the middle angle enters NEGATED.  The
-    # previous arm had the opposite twist signs and gave Ry(+t5), so the t4
-    # and t6 extractions below each pick up a sign flip relative to the
-    # textbook ZYZ formulae.  Getting this wrong does not fail loudly: it
-    # returns joint angles that are wrong by pi in two joints while still
-    # looking plausible, which is why validate.py round-trips every branch
-    # through fk() rather than checking joint values.
+    # - ZYZ Euler with the middle angle NEGATED (opposite-twist arms give
+    # Ry(+t5)), so t4/t6 below pick up a sign flip vs. textbook ZYZ. Wrong
+    # sign fails silently (angles off by pi but still plausible), which is
+    # why validate.py round-trips every branch through fk() instead of
+    # checking joint values directly.
     R03 = fk_all([t1, t2, t3, 0, 0, 0])[3][:3, :3]
     R36 = R03.T @ R
 
     sin_t5 = np.hypot(R36[0, 2], R36[1, 2])
     if sin_t5 < 1e-9:
-        # Wrist singularity: only theta4 +/- theta6 is observable, so pin
-        # theta4 at zero and put the whole rotation on theta6.
+        # Wrist singularity: only theta4 +/- theta6 observable, so pin theta4
+        # at zero and put the whole rotation on theta6.
         #   t5 = 0  : R36 = Rz(t4 + t6)  -> R36[0,0] =  cos, R36[0,1] = -sin
         #   t5 = pi : R36 = Rz(t4) Ry(pi) Rz(t6)
         #             -> R36[0,0] = -cos(t4 - t6), R36[0,1] = -sin(t4 - t6)
@@ -243,12 +233,11 @@ def elbow_conditioning(T, shoulder=+1):
     """
     |sin(gamma)| for a target: how far the arm is from the elbow singularity.
 
-    gamma = acos(cos_gamma), so the joint solution's sensitivity to numerical
-    error in cos_gamma scales as 1/|sin(gamma)|.  As the arm approaches full
-    extension or full fold this diverges and theta2/theta3 stop being well
-    determined even though the pose is still reached accurately - the elbow-up
-    and elbow-down branches are merging.  Test harnesses use this to decide
-    whether joint-space agreement is a meaningful thing to assert.
+    Sensitivity of the joint solution to numerical error in cos_gamma scales
+    as 1/|sin(gamma)|; near full extension/fold this diverges and
+    theta2/theta3 stop being well determined even though the pose is still
+    reached accurately (elbow-up/down branches merging). Test harnesses use
+    this to decide whether joint-space agreement is meaningful to assert.
     """
     R, p = T[:3, :3], T[:3, 3]
     pc = p - D6 * R[:, 2]
@@ -266,26 +255,23 @@ def shoulder_conditioning(T):
     """
     sqrt(rho^2 - d3^2) / rho: how far a target is from the singular cylinder.
 
-    The lateral offset d3 removes the singularity that a zero-offset arm has
-    where the wrist centre meets the joint-1 axis.  It does not remove it for
-    free.  It replaces a singular LINE with a singular CYLINDER of radius |d3|
-    that the arm cannot enter, and leaves a boundary layer just outside it in
-    which theta1 is finite but ill-conditioned:
+    d3 replaces the zero-offset arm's singular LINE with a singular CYLINDER
+    of radius |d3|, leaving a boundary layer just outside it where theta1 is
+    finite but ill-conditioned:
 
         theta1 = atan2(pc_y, pc_x) + atan2(d3, root),  root = sqrt(rho^2 - d3^2)
 
-    so d(theta1)/d(rho) = -d3 / (rho * root), which diverges as root -> 0.  A
-    half-LSB of error in the wrist-centre position becomes milliradians of
-    theta1, in exactly the way a half-LSB in the square root becomes
-    milliradians of theta3 near the elbow singularity.
+    so d(theta1)/d(rho) = -d3 / (rho * root), diverging as root -> 0 - a
+    half-LSB position error becomes milliradians of theta1, the same way it
+    does for theta3 near the elbow singularity.
 
-    Returned quantity is root/rho = cos(atan2(d3, root)), in [0, 1], zero on
-    the cylinder - the direct analogue of elbow_conditioning()'s |sin gamma|.
+    Returns root/rho = cos(atan2(d3, root)) in [0, 1], zero on the cylinder -
+    the analogue of elbow_conditioning()'s |sin gamma|.
 
-    Measured on the 256-vector fixed-point set: every vector that missed the
-    5e-3 rad joint tolerance had root/rho < 0.14, and every vector above 0.30
-    agreed to 5.7e-4 or better.  The testbenches assert joint agreement only
-    above 0.20 and report the rest, which is the same policy the elbow gets.
+    Measured on the 256-vector fixed-point set: every vector missing the
+    5e-3 rad joint tolerance had root/rho < 0.14; every vector above 0.30
+    agreed to 5.7e-4 or better. Testbenches assert joint agreement only above
+    0.20, same policy as the elbow.
     """
     R, p = T[:3, :3], T[:3, 3]
     pc = p - D6 * R[:, 2]
@@ -323,9 +309,8 @@ def pose_error(T_des, T_cur):
     return np.concatenate([ep, eo])
 
 
-# Trust region.  Must match IK_DLS_STEP_MAX_DEFAULT / IK_DLS_STEP_HALVINGS in
-# hls/include/ik_config.hpp, which is where the measurements behind these
-# values are recorded.
+# Must match IK_DLS_STEP_MAX_DEFAULT / IK_DLS_STEP_HALVINGS in
+# hls/include/ik_config.hpp, where the measurements behind these are recorded.
 DLS_STEP_MAX = 1.5
 DLS_STEP_HALVINGS = 8
 
@@ -334,14 +319,13 @@ def clamp_step(dq, step_max, halvings=DLS_STEP_HALVINGS):
     """
     Bound |dq|_inf by halving, exactly as iks::dls() does in hardware.
 
-    Halving rather than scaling by step_max/|dq|_inf: a power of two is exact
-    in both the double model and the Q16.16 kernel, so the two follow the same
-    trajectory through the clamp.  The effective radius is therefore
-    (step_max/2, step_max], not step_max - measured as costing nothing against
-    an exact scale (see model/sweep_dls.py).
+    Halving (not scaling by step_max/|dq|_inf) keeps a power of two exact in
+    both the double model and the Q16.16 kernel, so both follow the same
+    clamp trajectory. Effective radius is (step_max/2, step_max], not
+    step_max - measured as costing nothing vs. an exact scale (sweep_dls.py).
 
-    Scaling, not per-joint clipping: clipping would change the step's
-    direction, which is what the least-squares solve determined.
+    Scaling, not per-joint clipping, to preserve the step's direction as
+    determined by the least-squares solve.
     """
     if step_max <= 0.0:
         return dq
@@ -358,15 +342,14 @@ def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step_max=DLS_STEP_MAX):
     """
     q <- q + clamp( J^T (J J^T + lam^2 I)^-1 e )
 
-    Returns (q, iters, err_norm, converged).  `iters` is the datum the
-    real-time study cares about: it is data-dependent and unbounded in general,
-    which is exactly what the fixed-latency analytic core is being compared to.
+    Returns (q, iters, err_norm, converged). `iters` is data-dependent and
+    unbounded in general - the point of comparison against the fixed-latency
+    analytic core.
 
-    `step_max` bounds |dq|_inf per iteration.  Pass 0 for the undamped-step
-    behaviour this solver had before the trust region was added - that is the
-    baseline every measurement in ik_config.hpp's trust region block is quoted
-    against, and gen_vectors.py uses it deliberately to keep the pose table
-    fixed across solver changes.
+    `step_max` bounds |dq|_inf per iteration. Pass 0 for the pre-trust-region
+    undamped-step behaviour - the baseline every ik_config.hpp measurement is
+    quoted against, and what gen_vectors.py uses to keep the pose table fixed
+    across solver changes.
     """
     q = np.array(q0, dtype=float)
     I6 = np.eye(6)
@@ -393,7 +376,7 @@ SCALE = 1 << FRAC_BITS
 
 
 def to_fixed(x):
-    """Float -> signed 32-bit Q16.16 integer (two's complement, as written to a register)."""
+    """Float -> signed 32-bit Q16.16 integer (two's complement)."""
     v = int(np.floor(np.asarray(x, dtype=float) * SCALE + 0.5))
     v = max(-(1 << 31), min((1 << 31) - 1, v))
     return v & 0xFFFFFFFF

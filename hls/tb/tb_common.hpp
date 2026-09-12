@@ -1,17 +1,12 @@
 #ifndef TB_COMMON_HPP
 #define TB_COMMON_HPP
 
+//! Same sources build against ap_fixed (Vitis csim/cosim) and against the
+//! float reference (host g++, hls/tb/Makefile), so regressions run without
+//! a Vitis install.
 //
-//! Shared testbench scaffolding.
-//
-//! The same sources run in two places:
-//! - Vitis HLS csim/cosim, against ap_fixed
-//! - a host g++ build (hls/tb/Makefile), against the float reference
-//! so the algorithms can be regression-tested without a Vitis installation.
-//
-//! Vector files come from model/gen_vectors.py and hold signed decimal Q16.16
-//! words, which is exactly what the PS driver would write into the IP.
-//
+//! Vector files (model/gen_vectors.py) hold signed decimal Q16.16 words,
+//! matching what the PS driver writes into the IP.
 
 #include <cmath>
 #include <cstdio>
@@ -23,14 +18,9 @@
 #include "ik_config.hpp"
 #include "ik_types.hpp"
 
-//
-//! Locating the vector files.
-//
-//! The host build runs from hls/tb, while HLS C-simulation runs from a
-//! generated directory several levels down inside the work dir whose depth
-//! depends on the tool version.  Rather than hard-code a guess, try the
-//! plausible roots in order.  $IK_VECTOR_DIR overrides everything.
-//
+//! HLS C-sim runs from a generated dir several levels down whose depth
+//! varies by tool version, so try plausible roots in order.
+//! $IK_VECTOR_DIR overrides everything.
 static inline std::ifstream tb_open(const char* name) {
     static const char* roots[] = {
 #ifdef TB_VECTOR_DIR

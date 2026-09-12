@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-The experiment behind the DLS trust region, and behind the decision NOT to
-implement adaptive lambda.  Both results are recorded in the trust region block
-of hls/include/ik_config.hpp; this is what reproduces them.
+The experiment behind the DLS trust region, and the decision NOT to
+implement adaptive lambda.  Results recorded in the trust region block of
+hls/include/ik_config.hpp; this reproduces them.
 
     python3 model/sweep_dls.py              # the headline table
     python3 model/sweep_dls.py --radius     # trust radius sweep
@@ -10,24 +10,21 @@ of hls/include/ik_config.hpp; this is what reproduces them.
     python3 model/sweep_dls.py --lambda     # lambda itself
     python3 model/sweep_dls.py --all
 
-Three things this gets right that a naive sweep does not, each of which
-reversed a conclusion while the experiment was being built:
+Three things a naive sweep would get wrong, each of which reversed a
+conclusion while this was being built:
 
-1. It counts LOOP PASSES, not accepted steps.  That is what the kernel's
-   `iters` register reports and what the measured 15,952 ns/iteration
-   multiplies.  A rejected Levenberg-Marquardt step costs a full iteration in
-   this architecture, which is most of why LM loses here.
+1. Counts LOOP PASSES, not accepted steps - what the kernel's `iters`
+   register reports and what 15,952 ns/iteration multiplies. A rejected LM
+   step costs a full iteration here, which is most of why LM loses.
 
-2. It evaluates on a FROZEN pose table.  gen_vectors.py selects a quarter of
-   the harness table on the model's DLS iteration count; if the selection
-   criterion moves with the solver, an improved solver simply gets handed
-   harder poses and reports no improvement.  build_table() below freezes
-   selection on the unclamped solver, matching gen_vectors.py.
+2. Evaluates on a FROZEN pose table: gen_vectors.py selects a quarter of the
+   harness table on the model's DLS iteration count, so an unfrozen
+   selection would just hand an improved solver harder poses and report no
+   improvement. build_table() freezes on the unclamped solver, matching
+   gen_vectors.py.
 
-3. It reports the median next to max/med.  max/med is the real-time figure of
-   merit but it is not an objective you can optimise on its own - making every
-   pose equally slow drives it to 1.00.  The lambda sweep below shows exactly
-   that happening.
+3. Reports median next to max/med, since max/med alone can be minimized by
+   making every pose equally slow (see the lambda sweep below).
 """
 
 import sys
@@ -59,8 +56,8 @@ def dls(T_des, q0, lam=LAMBDA, max_iter=MAX_ITER, tol=TOL, step_max=0.0,
          'forward'  raise lambda when the residual grew, but keep the step
          'backtrack' textbook LM: undo the step, raise lambda, retry
 
-    halve=True reproduces the kernel's power-of-two clamp; halve=False uses an
-    exact step_max/|dq| scale, which is what the shift is measured against.
+    halve=True reproduces the kernel's power-of-two clamp; halve=False is an
+    exact step_max/|dq| scale, the baseline the clamp is measured against.
     """
     q = np.array(q0, dtype=float)
     lam_sq, lam_sq_min, lam_sq_max = lam * lam, lam * lam, lam_max * lam_max
@@ -131,11 +128,9 @@ def make_cases(n, spread, seed):
 def build_table(n=48, seed=0x1153):
     """
     The harness pose table, same composition as gen_vectors.gen_c_header():
-    half ordinary, a quarter geometrically stressed, a quarter selected on DLS
-    iteration count with far seeds.
-
-    Tail selection runs the UNCLAMPED solver and stays there - see the module
-    docstring, point 2.
+    half ordinary, a quarter geometrically stressed, a quarter selected on
+    DLS iteration count with far seeds. Tail selection runs the UNCLAMPED
+    solver and stays there (module docstring, point 2).
     """
     rng = np.random.default_rng(seed)
     recs = []
@@ -175,7 +170,7 @@ def build_table(n=48, seed=0x1153):
         if not M.ik_analytic(Tq)[1]:
             continue
         s = _q(q + rng.uniform(-1.2, 1.2, 6))
-        k, ok, _ = dls(Tq, s, step_max=0.0)       # frozen baseline
+        k, ok, _ = dls(Tq, s, step_max=0.0)
         if ok and 8 <= k <= 32:
             pool.append((k, Tq, s))
     pool.sort(key=lambda r: r[0])

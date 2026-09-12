@@ -3,16 +3,13 @@
 #include "kinematics.hpp"
 
 //
-//! Closed-form IK for a 6R arm with a spherical wrist.
+//! Closed-form IK: decouple position from orientation at the wrist centre,
+//! solve the arm as a planar 2-link problem, then read wrist angles as a
+//! ZYZ Euler triple.
 //
-//! Structure: decouple position from orientation at the wrist centre, solve the
-//! arm as a planar 2-link problem, then read the wrist angles out of the
-//! residual rotation as a ZYZ Euler triple.
-//
-//! Note the absence of any runtime division: the law-of-cosines denominator is
-//! a geometry constant, pre-inverted in ik_config.hpp.  The only non-trivial
-//! operators are five CORDIC evaluations and one square root, all fixed
-//! iteration count.  That is what makes this path's latency a constant.
+//! No runtime division: the law-of-cosines denominator is pre-inverted in
+//! ik_config.hpp. Only fixed-iteration-count CORDIC/sqrt ops remain, which
+//! is what makes this path's latency a constant.
 //
 int iks::analytic(const ik_real_t Rd[3][3], const ik_real_t pd[3], int cfg,
                   ik_real_t q[IK_DOF]) {
@@ -24,7 +21,7 @@ int iks::analytic(const ik_real_t Rd[3][3], const ik_real_t pd[3], int cfg,
 
     int st = IK_OK;
 
-    //! ---- 1. wrist centre: step back along the approach axis ----
+    //! wrist centre: step back along the approach axis
     ik_real_t pc[3];
 AN_WC:
     for (int i = 0; i < 3; i++) {
@@ -34,23 +31,16 @@ AN_WC:
     }
 
     //! ---- 2. base rotation, with the lateral shoulder offset ----
+    //! d3 translates along z2 (parallel to z1), so pc satisfies the exact
+    //! invariant pc_x sin(t1) - pc_y cos(t1) = d3, independent of q2..q6,
+    //! giving t1 = atan2(pc_y,pc_x) + atan2(d3, +-sqrt(rho^2-d3^2)) - the two
+    //! signs being the two shoulder configs. These are NOT pi apart, unlike
+    //! the zero-offset case.
     //
-    //! d3 translates along z2, which is parallel to z1, so joints 2 and 3 move
-    //! the wrist centre in a plane held a fixed distance d3 off the joint-1
-    //! axis.  That is an exact invariant, independent of q2..q6:
-    //
-    //!     pc_x sin(t1) - pc_y cos(t1) = d3
-    //
-    //! giving t1 = atan2(pc_y, pc_x) + atan2(d3, +-sqrt(rho^2 - d3^2)), the two
-    //! signs being the two shoulder configurations.  Note they are NOT pi apart
-    //! the way they were on the previous zero-offset arm, where this reduced to
-    //! t1 = atan2(pc_y, pc_x) and its negation.
-    //
-    //! The radicand doubles as a reachability test the zero-offset form did not
-    //! need: rho < |d3| is inside a cylinder about the joint-1 axis that the arm
-    //! cannot enter.  That cylinder is the reason for the offset - without it
-    //! the wrist centre can sit exactly on the axis, where t1 is undefined and
-    //! atan2(0, 0) returns zero rather than failing.
+    //! Radicand < 0 (rho < |d3|) is a reachability test: it flags the
+    //! cylinder about the joint-1 axis the arm cannot enter. Without the
+    //! offset, the wrist centre could sit on the axis where atan2(0,0)
+    //! silently returns zero instead of failing.
     ik_real_t t1b, rho;
     ikm::atan2_hypot(pc[1], pc[0], t1b, rho);
 
@@ -66,19 +56,17 @@ AN_WC:
                     (ik_acc_t)ikm::atan2((ik_real_t)IK_D3, root_s)));
 
     //! ---- 3. planar 2-link sub-problem ----
-    //! u = a2 cos(t2) + L3 cos(beta),  w = a2 sin(t2) + L3 sin(beta),
-    //! with beta = t2 + t3 + PHI and gamma = beta - t2.
-    //
-    //! u carries the shoulder branch implicitly - the lefty solution simply
-    //! produces a negative u - so unlike the zero-offset version there is no
-    //! separate sign to apply to the radius.
+    //! u = a2 cos(t2) + L3 cos(beta), w = a2 sin(t2) + L3 sin(beta),
+    //! beta = t2 + t3 + PHI, gamma = beta - t2.
+    //! u carries the shoulder branch implicitly (lefty solution => negative
+    //! u), so no separate sign is needed on the radius.
     ik_real_t c1, s1;
     ikm::sincos(t1, s1, c1);
     ik_real_t u = (ik_real_t)((ik_acc_t)((ik_real_t)(pc[0] * c1)) +
                               (ik_acc_t)((ik_real_t)(pc[1] * s1)) -
                               (ik_acc_t)IK_A1);
     ik_real_t s = (ik_real_t)((ik_acc_t)pc[2] - (ik_acc_t)IK_D1);
-    ik_real_t r = u;  //! kept as `r` below so the planar solve reads unchanged
+    ik_real_t r = u;
 
     ik_acc_t rs =
         (ik_acc_t)(r * r) + (ik_acc_t)(s * s) - (ik_acc_t)IK_A2SQ_PLUS_L3SQ;
@@ -93,8 +81,8 @@ AN_WC:
     ik_real_t sg = el ? sg_mag : (ik_real_t)(-sg_mag);
 
     ik_real_t gamma = ikm::atan2(sg, cg);
-    //! t3 = gamma - PHI, not gamma + PHI: alpha3 is negative on this arm, which
-    //! flips the sense of the elbow offset.  See ik_geometry.hpp.
+    //! t3 = gamma - PHI, not + PHI: alpha3 is negative on this arm, flipping
+    //! the sense of the elbow offset. See ik_geometry.hpp.
     ik_real_t t3 =
         ikm::wrap_pi((ik_real_t)((ik_acc_t)gamma - (ik_acc_t)IK_PHI));
 
@@ -110,14 +98,13 @@ AN_WC:
 
     ik_real_t R36[3][3];
 AN_R36_R:
-    //! Rolled - a fully unrolled 3x3x3 costs 27 multipliers with zero
-    //! reuse for a one-shot computation; see ik_math.hpp's sincos().
+    //! Rolled: a fully unrolled 3x3x3 costs 27 multipliers for a one-shot
+    //! computation with zero reuse.
     for (int i = 0; i < 3; i++) {
         for (int j = 0; j < 3; j++) {
             ik_acc_t acc = (ik_acc_t)0;
             for (int k = 0; k < 3; k++) {
                 acc += (ik_acc_t)(R03[k][i] * Rd[k][j]);  //! transpose of R03
-            }
             R36[i][j] = (ik_real_t)acc;
         }
     }
@@ -126,21 +113,19 @@ AN_R36_R:
     ik_real_t t4, t5, t6;
 
     if (s5 < (ik_real_t)IK_WRIST_EPS) {
-        //! Wrist singularity: theta4 and theta6 are no longer independent, only
-        //! their sum (t5 = 0) or difference (t5 = pi) is observable.  Pin
-        //! theta4 at zero and put the whole rotation on theta6.
+        //! Wrist singularity: t4/t6 aren't independent, only their sum
+        //! (t5=0) or difference (t5=pi) is observable. Pin t4=0, put the
+        //! whole rotation on t6.
         bool up = (R36[2][2] > (ik_real_t)0);
         t4 = (ik_real_t)0;
         t5 = up ? (ik_real_t)0 : (ik_real_t)IK_PI;
         t6 = up ? ikm::atan2((ik_real_t)(-R36[0][1]), R36[0][0])
                 : ikm::atan2(R36[0][1], (ik_real_t)(-R36[0][0]));
     } else if (wr) {
-        //! Negated arguments relative to the textbook ZYZ extraction: with
-        //! alpha4 = +pi/2 and alpha5 = -pi/2 the residual rotation is
-        //! Rz(t4) Ry(-t5) Rz(t6), so the middle angle enters negated and t4/t6
-        //! each pick up a sign flip.  Getting this wrong is silent - it returns
-        //! two joints wrong by pi that still look like plausible angles - which
-        //! is why the testbenches round-trip through fk() instead.
+        //! Negated vs. textbook ZYZ extraction: alpha4=+pi/2, alpha5=-pi/2
+        //! make the residual rotation Rz(t4) Ry(-t5) Rz(t6), flipping signs
+        //! on t4/t5/t6. Wrong here is silent (plausible-looking angles off
+        //! by pi) - testbenches round-trip through fk() to catch it.
         t4 = ikm::atan2((ik_real_t)(-R36[1][2]), (ik_real_t)(-R36[0][2]));
         t5 = ikm::atan2(s5, R36[2][2]);
         t6 = ikm::atan2((ik_real_t)(-R36[2][1]), R36[2][0]);

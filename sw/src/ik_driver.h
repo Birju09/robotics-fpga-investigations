@@ -4,11 +4,8 @@
 #include <stdint.h>
 
 //
-//! Vitis compiles the whole application with g++, .c files included, so every
-//! declaration here is seen in a C++ translation unit and would be mangled.
-//! ik_sw_ref.cpp defines its half of this interface inside extern "C" - without
-//! a matching guard the two spellings do not meet and the reference goes
-//! undefined at link time, long after every file has compiled cleanly.
+//! Vitis compiles the whole app with g++ (even .c files), so declarations here
+//! get C++ name mangling unless guarded - ik_sw_ref.cpp expects extern "C".
 //
 #ifdef __cplusplus
 extern "C" {
@@ -17,18 +14,11 @@ extern "C" {
 //
 //! Bare-metal driver for the four HLS kernels.
 //
-//! Register maps
-//! -------------
-//! Vitis HLS generates an AXI4-Lite control bank per kernel.  The offsets below
-//! MUST be checked against the generated headers after any change to a kernel's
-//! argument list - HLS assigns them by order and size, and adding one scalar
-//! shifts everything after it.  The generated files are:
-//
+//! Register offsets are assigned by HLS from argument order/size and must be
+//! rechecked against the generated headers after any argument-list change:
 //! find hls/build/<kernel> -path '*impl/ip/drivers*' -name 'x<kernel>_hw.h'
-//
-//! verify_reg_map() in main.c does a runtime sanity check by writing a known
-//! pattern and reading it back, which catches a stale map before it produces
-//! plausible-looking wrong answers.
+//! verify_reg_map() in main.c catches a stale map via write/read-back before
+//! it produces plausible-looking wrong answers.
 //
 //! The AP_CTRL block is common to all of them:
 //! bit 0  ap_start   (write 1 to launch; self-clearing)
@@ -37,9 +27,7 @@ extern "C" {
 //! bit 3  ap_ready   (read)
 //! bit 7  auto_restart
 //
-//! Fixed point
-//! -----------
-//! Every data word is signed Q16.16: value = raw / 65536.0.
+//! Fixed point: every data word is signed Q16.16: value = raw / 65536.0.
 //
 
 #define IK_FRAC_BITS 16
@@ -69,7 +57,6 @@ extern "C" {
 
 typedef int32_t ik_word_t;
 
-//! A kernel instance: base address plus the offsets for its arguments.
 typedef struct {
     uintptr_t base;
 } ik_dev_t;
@@ -85,9 +72,8 @@ static inline float ik_q2f(ik_word_t w) {
 }
 
 //! ---------------- kernel entry points ----------------
-
-//! Each returns the kernel's status word, and writes the elapsed PL-clock
-//! cycles measured by the PS global timer into *cycles when it is non-NULL.
+//! Each returns the kernel's status word; *cycles receives elapsed PL-clock
+//! cycles (PS global timer) when non-NULL.
 
 int ik_analytic_solve(ik_dev_t* dev, const float pose[6], int cfg,
                       float q_out[6], uint32_t* cycles);
@@ -104,8 +90,7 @@ int ik_matmul(ik_dev_t* dev, int m, int k, int n, int ta, int tb,
 int ik_matinv(ik_dev_t* dev, int n, const float* A, float* Ainv,
               uint32_t* cycles);
 
-//! ---------------- software reference (runs on the A9) ----------------
-//! Same algorithms in float, for the PS-vs-PL comparison.
+//! ---------------- software reference (runs on the A9, float, for PS-vs-PL comparison) ----------------
 int ik_analytic_solve_sw(const float pose[6], int cfg, float q_out[6]);
 int ik_dls_solve_sw(const float pose[6], const float q_seed[6], float lambda,
                     float tol, int max_iter, float step_max, float q_out[6],

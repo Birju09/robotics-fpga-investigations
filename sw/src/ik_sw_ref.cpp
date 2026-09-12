@@ -1,17 +1,11 @@
 //
 //! Software reference running on the Cortex-A9.
 //
-//! This deliberately compiles the *same* translation units the PL kernels are
-//! built from (the .cpp files under hls/src) with -DIK_USE_FLOAT.
-//! Reimplementing separately would make the PS-vs-PL comparison a comparison of
-//! two different programs; sharing the source means any latency difference is
-//! attributable to the target, not to the algorithm.
+//! Compiles the same hls/src .cpp files with -DIK_USE_FLOAT so PS-vs-PL
+//! latency differences are attributable to the target, not to the algorithm.
 //
-//! Note the numeric type differs by construction: the PL runs Q16.16 fixed
-//! point, the PS runs double.  That is the honest comparison - it is what each
-//! target is good at - but it means the two will not agree bit for bit, and the
-//! PS figure carries the cost of double-precision software floating point on a
-//! VFPv3 core.  See docs/timing_methodology.md.
+//! PL runs Q16.16 fixed point, PS runs double - won't agree bit for bit.
+//! See docs/timing_methodology.md.
 //
 
 #include "ik_kernels.hpp"

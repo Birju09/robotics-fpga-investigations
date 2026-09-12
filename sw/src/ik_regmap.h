@@ -1,19 +1,11 @@
 //
-//! PROVISIONAL register map - NOT yet generated from your build.
-//
-//! The offsets below follow the layout Vitis HLS conventionally produces for
-//! these four signatures, but HLS assigns AXI4-Lite offsets from argument order
-//! and width and the result is not guaranteed to match across releases or after
-//! any edit to a kernel's arguments.
-//
-//! Before running on hardware:
-//
-//! make -C hls ip
-//! python3 scripts/gen_regmap.py     # overwrites this file for real
-//
-//! ik_verify_regmap() in main.c performs a write/read-back check at startup and
-//! refuses to continue if these are wrong, so a stale map fails loudly instead
-//! of producing plausible-looking wrong answers.
+//! PROVISIONAL register map - NOT yet generated from your build. HLS assigns
+//! AXI4-Lite offsets from argument order/width; not guaranteed stable across
+//! releases or kernel-argument edits. Before running on hardware:
+//!   make -C hls ip
+//!   python3 scripts/gen_regmap.py     # overwrites this file for real
+//! ik_verify_regmap() in main.c does a write/read-back check at startup and
+//! refuses to continue if these are wrong.
 //
 #ifndef IK_REGMAP_H
 #define IK_REGMAP_H
@@ -61,11 +53,8 @@
 //! ---- ik_dls_kernel(pose[6], q_seed[6], lambda, tol, max_iter, step_max,
 //! q[6], iters, resid, status) ----
 //
-//! step_max (the DLS trust region) was added after this provisional map was
-//! first written, which pushed every scalar after it up by one slot and moved
-//! the three arrays.  That is exactly the kind of edit the generated map
-//! exists for: run scripts/gen_regmap.py.  main.c's write/read-back check
-//! catches it if you do not.
+//! step_max was added after this map was first written, shifting every
+//! scalar after it - exactly the kind of edit that needs gen_regmap.py rerun.
 #define XIK_DLS_KERNEL_CTRL_ADDR_AP_CTRL 0x00
 #define XIK_DLS_KERNEL_CTRL_ADDR_LAMBDA_DATA 0x10
 #define XIK_DLS_KERNEL_CTRL_ADDR_TOL_DATA 0x18

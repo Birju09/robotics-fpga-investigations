@@ -3,40 +3,24 @@
 #include "spd.hpp"
 #include "tb_common.hpp"
 
+//! spd::solve() has no golden vectors: A u = b defines u completely, with no
+//! convention to reimplement, so this checks the residual ||A u - b||
+//! directly rather than agreeing with one reference implementation.
+//! Also cross-checked against mi::invert() to catch the two solvers drifting
+//! apart (which would silently change the DLS trajectory).
 //
-//! spd::solve() has no golden vectors of its own, and deliberately so.
-//
-//! The other testbenches compare against model/ik_model.py because those
-//! kernels implement a convention (DH order, branch selection, rounding) that
-//! a reimplementation could get subtly and silently wrong.  A linear solve has
-//! no such convention: A u = b defines u completely.  So this checks the
-//! defining property directly - the residual ||A u - b|| - on matrices built
-//! the way ik_dls builds them, which is a stronger statement than agreeing
-//! with one particular reference implementation.
-//
-//! Two independent checks, because they fail differently:
-//
-//! residual   catches a wrong answer
-//! vs mi      catches spd::solve() and mi::invert() having drifted apart,
-//! which would mean the DLS trajectory changed when the solver
-//! was swapped underneath it
-//
-//! Inputs are A = B B^T + lambda^2 I, the exact shape DLS produces, over a
-//! spread of conditioning: well scaled, nearly rank deficient (which is what a
-//! kinematic singularity looks like here), and badly scaled between rows.
+//! Inputs are A = B B^T + lambda^2 I, the shape DLS produces, swept over
+//! well scaled, nearly rank deficient (kinematic-singularity-like), and
+//! badly row-scaled conditioning.
 //
 
-//
-//! dup >= 0 copies row 0 of B onto row `dup`, making B exactly rank deficient.
-//! A = B B^T + lambda^2 I then has an eigenvalue of exactly lambda^2 in the
-//! dependent direction, which is how the singular branch below gets a
-//! guaranteed small pivot instead of one that depends on the draw.
-//
+//! dup >= 0 copies row 0 of B onto row `dup`, making B exactly rank
+//! deficient, so A's eigenvalue in that direction is exactly lambda^2 -
+//! a guaranteed small pivot instead of one that depends on the draw.
 static void build_spd(int n, int seed, double lambda, double scale[6], int dup,
                       double A[6][6]) {
     double B[6][6];
-    //! Deterministic, portable, and not std::rand: the point is that a failure
-    //! reproduces on someone else's machine.
+    //! Not std::rand: this LCG reproduces identically on any machine.
     unsigned s = (unsigned)seed * 1664525u + 1013904223u;
     for (int i = 0; i < n; i++) {
         for (int j = 0; j < n; j++) {
@@ -63,21 +47,16 @@ int main() {
     TbStats res_st("spd::solve (residual Au-b)");
     TbStats agr_st("spd::solve (vs mi::invert)");
 
-    //! Residual is held to Q16.16's own resolution: 1/65536 is 1.5e-5, and a
-    //! six-term reduction that rounds once per store cannot do better than a
-    //! few LSBs.  Agreement with mi::invert is looser for the same reason
-    //! tb_matinv's absolute check is - the two reciprocate and multiply at
-    //! different points, so they disagree in the last digits by construction.
+    //! TOL_RES: Q16.16 LSB is 1.5e-5; a 6-term reduction rounding once per
+    //! store can't beat a few LSBs. TOL_AGR is looser because spd::solve and
+    //! mi::invert reciprocate/multiply at different points and disagree in
+    //! the last digits by construction.
     const double TOL_RES = 2e-3;
     const double TOL_AGR = 5e-2;
 
-    //! Every lambda here satisfies lambda^2 > IK_PIVOT_EPS, which is the
-    //! precondition ik_config.hpp states for that epsilon: it is "below the
-    //! smallest eigenvalue that damping guarantees".  lambda = 0.002 gives
-    //! lambda^2 = 4e-6, two decades UNDER the 1e-4 pivot floor, so a solver
-    //! that reported IK_ERR_SINGULAR there would be correct and a test that
-    //! demanded a solution would be wrong.  That branch is checked
-    //! deliberately at the end instead.
+    //! All lambdas here satisfy lambda^2 > IK_PIVOT_EPS (below that floor,
+    //! IK_ERR_SINGULAR is the correct response, not a solution - checked
+    //! separately below).
     const double lambdas[3] = {0.02, 0.2, 0.05};
     double scales[3][6] = {
         {1.0, 1.0, 1.0, 1.0, 1.0, 1.0},    //! well scaled
@@ -94,9 +73,8 @@ int main() {
                     build_spd(n, seed + 31 * (si + 3 * li) + 971 * n,
                               lambdas[li], scales[si], -1, Ad);
 
-                    //! Quantise through Q16.16 so the testbench compares what
-                    //! the kernel actually receives, not what the generator
-                    //! produced.
+                    //! Quantised through Q16.16: compare what the kernel
+                    //! actually receives, not what the generator produced.
                     ik_real_t A[IK_MAT_MAX][IK_MAT_MAX];
                     ik_real_t b[IK_MAT_MAX], u[IK_MAT_MAX];
                     double Aq[6][6], bq[6];
@@ -157,24 +135,16 @@ int main() {
         }
     }
 
+    //! A system whose damping is too weak to hold the smallest pivot above
+    //! IK_PIVOT_EPS must be REPORTED (IK_ERR_SINGULAR), not silently solved -
+    //! a saturated reciprocal returning IK_OK would put a silently wrong
+    //! joint command on the wire.
     //
-    //! The other branch: a system whose damping is too weak to hold the
-    //! smallest pivot above IK_PIVOT_EPS must be REPORTED, not silently
-    //! solved.  This is what the sweep above deliberately excludes.
-    //
-    //! Reporting is the whole contract here - ik_dls turns it into
-    //! IK_ERR_SINGULAR and abandons the pose, so a solver that returned
-    //! IK_OK with a saturated reciprocal would put a silently wrong joint
-    //! command on the wire.
-    //
-    //! The rank deficiency is exact (a duplicated row) rather than merely
-    //! ill-scaled, so the dependent direction's eigenvalue is exactly
-    //! lambda^2 = 4e-6 - two decades under the 1e-4 pivot floor, and below
-    //! Q16.16's 1.5e-5 LSB besides.  An earlier version of this check just
-    //! scaled two rows down by 0.02 and asserted all twelve draws would
-    //! trip; only three did, because four full-scale rows leave plenty of
-    //! rank.  That was the test being wrong, not the solver.
-    //
+    //! Rank deficiency is exact (duplicated row) so the dependent
+    //! eigenvalue is exactly lambda^2 = 4e-6, well under both the pivot
+    //! floor and Q16.16's LSB. (An earlier version merely scaled two rows
+    //! down and only 3/12 draws tripped - the test was wrong, not the
+    //! solver; hence the exact construction here.)
     int flagged = 0, singular_cases = 0;
     for (int seed = 0; seed < 12; seed++) {
         double Ad[6][6];
@@ -194,20 +164,11 @@ int main() {
             flagged++;
     }
 
-    //
-    //! ikm::recip_q16_raw() gets its own check, and needs one.
-    //
-    //! spd::solve() calls it only in the fixed-point build; this build runs in
-    //! double and takes the exact-division path, so nothing above would notice
-    //! if the Newton-Raphson were wrong.  It is integer-only and identical in
-    //! both builds precisely so it can be tested here - a silently wrong
-    //! reciprocal would corrupt every DLS solve, and there is no other
-    //! opportunity to catch that before hardware.
-    //
-    //! Swept across the whole supported input range: from just above the
-    //! IK_PIVOT_EPS floor (raw 7) to 20.0, which is well past any pivot
-    //! J J^T + lambda^2 I can produce for this arm.
-    //
+    //! ikm::recip_q16_raw() needs its own check: spd::solve() only calls it
+    //! in the fixed-point build, but this host build runs in double and
+    //! takes the exact-division path, so nothing above exercises it.
+    //! Swept from just above the IK_PIVOT_EPS floor (raw 7) to 20.0, past
+    //! any pivot this arm's J J^T + lambda^2 I can produce.
     long recip_n = 0, recip_bad = 0;
     double recip_worst = 0.0;
     for (long d = 7; d <= 20L * 65536L; d++) {
