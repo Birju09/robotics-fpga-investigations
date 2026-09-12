@@ -30,3 +30,4 @@ and what's open.
 - Per-iteration cost rose 7.7% across the manipulator retarget with no change to the DLS loop body — not yet reconciled against synthesis reports.
 - The random 48-pose table is not yet checked against the self-collision proxy used to fix the trajectory (~5% of a uniform `qlim` sample fails it).
 - Trust-region (step-clamp) before/after comparison is from the previous manipulator; no unclamped run exists on current geometry.
+- No power measurement exists for either kernel (no `report_power` run, no on-board current draw taken). The "low-power coprocessor" framing in README §6 is presently a hypothesis argued from clock speed and utilisation, not a measured figure.

@@ -173,10 +173,16 @@ engineering cost of an HLS/FPGA flow over just running the loop on the CPU
 is weighed in. The disturbed-case worst case is *bounded*, not *eliminated*:
 a step clamp (trust region) shrinks it but does not remove data dependence,
 and the closed-form solver that has none exists only for kinematically
-fortunate arms. The more realistic pitch is not "replace the CPU" but a
-low-power coprocessor: offload the IK solve to the PL, at a fraction of the
-A9's power draw, and free the CPU core for everything else in the control
-loop.
+fortunate arms.
+
+A more realistic pitch than "replace the CPU" is a low-power offload
+coprocessor: the DLS kernel occupies ~180 of the device's 220 DSP48E1 slices
+and ~41k of 53.2k LUTs, clocked at 80 MHz against the A9's 667 MHz, so its
+dynamic power draw is plausibly well under the A9 core's, and offloading
+frees that core for the rest of the control loop rather than the IK solve.
+**This is a hypothesis, not a measurement** — no power figure (Vivado
+`report_power`, or on-board current draw) has been taken for this design,
+and it is listed as such in [STATUS.md](STATUS.md).
 
 ---
 
