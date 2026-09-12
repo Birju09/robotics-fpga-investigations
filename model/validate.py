@@ -2,6 +2,7 @@
 """Validate the golden model: FK/IK round-trips, Jacobian, and DLS convergence."""
 
 import numpy as np
+import collision as C
 import ik_model as M
 
 rng = np.random.default_rng(0xC0FFEE)
@@ -105,6 +106,183 @@ def test_dls_near_singular(n=300, lam=0.08, max_iter=64, tol=1e-5):
     return np.array(iters), conv, n
 
 
+def test_seg_dist_bruteforce(n=2000, samples=400):
+    """
+    Segment-segment distance against brute force, and against the distance-only
+    form already in ik_model.
+
+    Brute force samples both segments on a grid, so it is an UPPER bound on
+    the true minimum: the closed form must never exceed it, and must come
+    within the grid's own resolution of it. Checking only |closed - brute|
+    would pass a closed form that returns something too large.
+
+    Degenerate cases are included deliberately - zero-length segments
+    (coincident DH frames, which this arm genuinely has at the wrist),
+    exactly parallel segments, and exactly touching segments. Every
+    segment-distance implementation breaks there, and the fixed-point build
+    will break differently again.
+    """
+    worst_over = 0.0     # closed form above brute force: a real error
+    worst_gap = 0.0      # brute force above closed form: grid resolution
+    worst_agree = 0.0    # vs ik_model._seg_dist
+    worst_witness = 0.0  # |wa - wb| vs the returned distance
+    u = np.linspace(0.0, 1.0, samples)
+
+    cases = []
+    for _ in range(n):
+        cases.append(rng.uniform(-1.0, 1.0, size=(4, 3)))
+    # zero-length (point vs segment), and point vs point
+    for _ in range(60):
+        p = rng.uniform(-1.0, 1.0, size=3)
+        q = rng.uniform(-1.0, 1.0, size=(2, 3))
+        cases.append(np.array([p, p, q[0], q[1]]))
+        r = rng.uniform(-1.0, 1.0, size=3)
+        cases.append(np.array([p, p, r, r]))
+    # exactly parallel, and collinear
+    for _ in range(60):
+        p0 = rng.uniform(-1.0, 1.0, size=3)
+        d = rng.uniform(-1.0, 1.0, size=3)
+        off = rng.uniform(-1.0, 1.0, size=3)
+        cases.append(np.array([p0, p0 + d, p0 + off, p0 + off + d]))
+        cases.append(np.array([p0, p0 + d, p0 + 2.0 * d, p0 + 3.0 * d]))
+    # exactly touching, at an endpoint and in the interior
+    for _ in range(60):
+        p0, p1, q1 = rng.uniform(-1.0, 1.0, size=(3, 3))
+        cases.append(np.array([p0, p1, p1, q1]))
+        mid = 0.5 * (p0 + p1)
+        cases.append(np.array([p0, p1, mid, mid + rng.uniform(-1, 1, size=3)]))
+
+    for p0, p1, q0, q1 in cases:
+        d, wa, wb, s, t = C.seg_seg_witness(p0, p1, q0, q1)
+
+        A = p0 + u[:, None] * (p1 - p0)
+        B = q0 + u[:, None] * (q1 - q0)
+        brute = float(np.sqrt(((A[:, None, :] - B[None, :, :]) ** 2)
+                              .sum(-1)).min())
+
+        worst_over = max(worst_over, d - brute)
+        worst_gap = max(worst_gap, brute - d)
+        worst_agree = max(worst_agree,
+                          abs(d - M._seg_dist(p0, p1, q0, q1)))
+        worst_witness = max(worst_witness,
+                            abs(float(np.linalg.norm(wa - wb)) - d))
+        assert -1e-12 <= s <= 1 + 1e-12 and -1e-12 <= t <= 1 + 1e-12
+
+    return worst_over, worst_gap, worst_agree, worst_witness, len(cases)
+
+
+def test_clearance_gradient(n=400, h=1e-6, tie=1e-3):
+    """
+    Analytic d(d_min)/dq against numerical differentiation.
+
+    d_min is a min over capsule pairs, so it is not differentiable where two
+    pairs tie, nor where a witness point crosses a segment endpoint. Samples
+    whose achieving pair changes under the perturbation are skipped rather
+    than counted as failures - the non-smoothness is real, and it is why the
+    repulsion this feeds is threshold-gated and trust-region clamped instead
+    of being trusted as an exact descent direction. The skip count is
+    reported so it cannot quietly become the whole sample.
+    """
+    caps = C.capsules()
+    pairs = C.capsule_pairs(caps)
+    worst = 0.0
+    checked = skipped = 0
+
+    for q in rand_q(n):
+        d0, g, info = C.clearance_gradient(q, caps, pairs)
+        if info is None or info["normal"] is None:
+            skipped += 1
+            continue
+
+        gn = np.zeros(6)
+        ok = True
+        for i in range(6):
+            qp, qm = q.copy(), q.copy()
+            qp[i] += h
+            qm[i] -= h
+            dp, ip = C.min_clearance(qp, caps, pairs)
+            dm, im = C.min_clearance(qm, caps, pairs)
+            # same achieving pair either side, and no near-tie
+            if ip["pair"] != info["pair"] or im["pair"] != info["pair"]:
+                ok = False
+                break
+            gn[i] = (dp - dm) / (2.0 * h)
+        if not ok:
+            skipped += 1
+            continue
+
+        # A near-tie makes the one-sided pair test pass but the derivative
+        # still kink, so check the runner-up margin explicitly.
+        second = np.inf
+        Ts = M.fk_all(q)
+        for (ia, ib) in pairs:
+            if (ia, ib) == info["pair"]:
+                continue
+            a0, a1 = C.capsule_endpoints(Ts, caps[ia])
+            b0, b1 = C.capsule_endpoints(Ts, caps[ib])
+            sd, _, _, _, _ = C.seg_seg_witness(a0, a1, b0, b1)
+            second = min(second, sd - caps[ia].radius - caps[ib].radius)
+        if second - d0 < tie:
+            skipped += 1
+            continue
+
+        worst = max(worst, float(np.abs(g - gn).max()))
+        checked += 1
+
+    return worst, checked, skipped
+
+
+def test_nullspace_projector(n=300, lam=0.02):
+    """
+    The damped nullspace projector, checked against what damping guarantees
+    rather than against zero.
+
+    N = I - J_t^T (J_t J_t^T + lam^2 I)^-1 J_t is not an exact projector, so
+    J_t N is not exactly zero. It is exactly
+
+        J_t N = lam^2 (J_t J_t^T + lam^2 I)^-1 J_t
+
+    which is the bound asserted here, and asserting THAT rather than
+    |J_t N z| < eps is the point: it is the identity that fails if the
+    projection is built wrong.
+
+    At task_dim = 6 the same algebra says N's eigenvalues are
+    lam^2/(sigma_i^2 + lam^2), so a full-pose task has near-zero avoidance
+    authority away from singularities. That is the control case - it is
+    measured here, not assumed.
+    """
+    out = {}
+    for td in (M.TASK_POS, M.TASK_FULL):
+        worst_leak = 0.0
+        ratios = []
+        for q in rand_q(n):
+            J = M.jacobian(q)[M.task_rows(td)]
+            A = J @ J.T + lam * lam * np.eye(td)
+            z = rng.normal(size=6)
+            Nz = C.nullspace_project(q, z, lam=lam, task_dim=td)
+
+            # identity: J N z == lam^2 A^-1 J z
+            lhs = J @ Nz
+            rhs = lam * lam * np.linalg.solve(A, J @ z)
+            worst_leak = max(worst_leak, float(np.abs(lhs - rhs).max()))
+
+            ratios.append(float(np.linalg.norm(Nz) / np.linalg.norm(z)))
+
+        sig_bound = []
+        for q in rand_q(60):
+            J = M.jacobian(q)[M.task_rows(td)]
+            s = np.linalg.svd(J, compute_uv=False)
+            sig_bound.append(lam * lam / (s.min() ** 2 + lam * lam))
+
+        out[td] = {
+            "identity": worst_leak,
+            "ratio_med": float(np.median(ratios)),
+            "ratio_max": float(np.max(ratios)),
+            "eig_bound_med": float(np.median(sig_bound)),
+        }
+    return out
+
+
 def test_fixed_point_headroom(n=3000):
     """Check the dynamic range that Q16.16 has to cover."""
     mx = {"J": 0.0, "JJt": 0.0, "inv": 0.0, "pos": 0.0}
@@ -151,6 +329,45 @@ if __name__ == "__main__":
     print(f"  converged      : {conv}/{n}")
     print(f"  iterations     : min={it.min()} median={int(np.median(it))} "
           f"p95={int(np.percentile(it,95))} max={it.max()}")
+
+    over, gap, agree, wit, ncase = test_seg_dist_bruteforce()
+    print(f"\n[Capsule distance]  {ncase} segment pairs "
+          f"(incl. degenerate: zero-length, parallel, touching)")
+    print(f"  closed form above brute force : {over:.3e}   "
+          f"{'PASS' if over < 1e-9 else 'FAIL'}")
+    print(f"  brute force above closed form : {gap:.3e}   "
+          f"(grid resolution, not an error)")
+    print(f"  vs ik_model._seg_dist         : {agree:.3e}   "
+          f"{'PASS' if agree < 1e-12 else 'FAIL'}")
+    print(f"  |wa - wb| vs returned dist    : {wit:.3e}   "
+          f"{'PASS' if wit < 1e-12 else 'FAIL'}")
+
+    caps = C.capsules()
+    pairs, dropped = C.capsule_pairs(caps, explain=True)
+    w, checked, skipped = test_clearance_gradient()
+    print(f"\n[Clearance gradient]  {len(caps)} capsules, "
+          f"{len(pairs)} pairs checked, {len(dropped)} pruned")
+    print(f"  max |analytic - numeric|      : {w:.3e}   "
+          f"{'PASS' if w < 1e-5 else 'FAIL'}")
+    print(f"  samples used / skipped        : {checked} / {skipped}   "
+          f"{'PASS' if checked > 0.5 * (checked + skipped) else 'FAIL'}")
+    print("  (skips are pair ties and witness-point endpoint crossings -")
+    print("   genuinely non-differentiable, not implementation failures)")
+    print("  NOTE: LINK_RADIUS is chosen, not cited. A negative clearance is")
+    print("        a finding; a positive one is not a proof of clearance.")
+
+    ns = test_nullspace_projector()
+    print(f"\n[Nullspace projector]  lam = 0.02")
+    print("  task_dim   |J N z - lam^2 A^-1 J z|   |Nz|/|z| med    max     "
+          "eig bound med")
+    for td, r in sorted(ns.items()):
+        print(f"  {td:^8}   {r['identity']:^23.3e}   {r['ratio_med']:10.3e} "
+              f"{r['ratio_max']:10.3e}   {r['eig_bound_med']:.3e}")
+    ns_ok = all(r["identity"] < 1e-9 for r in ns.values())
+    print(f"  projector identity holds      : {'PASS' if ns_ok else 'FAIL'}")
+    print("  At task_dim=6 the ratio is the damped leak, not a nullspace:")
+    print("  near-zero avoidance authority away from singularities, as")
+    print("  predicted. At task_dim=3 the nullspace is genuine (dim 3).")
 
     mx = test_fixed_point_headroom()
     print(f"\n[Q16.16 headroom]  (integer part must hold these)")

@@ -15,13 +15,15 @@ import sys
 import numpy as np
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import collision as COLL  # noqa: E402
 from robot import ROBOT, check_analytic_form  # noqa: E402
 
 OUT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "hls",
                    "include", "ik_geometry.hpp")
 
 #: Bump when a consumer requires something new; ik_config.hpp checks it.
-VERSION = 1
+#: 2 added the capsule collision tables (IK_CAP_*, IK_COLL_PAIRS).
+VERSION = 2
 
 
 def c_double(x):
@@ -32,6 +34,92 @@ def c_double(x):
 def carr(name, vals):
     body = ", ".join(c_double(v) for v in vals)
     return f"static const double {name}[IK_DOF] = {{{body}}};"
+
+
+def capsule_block(rb):
+    """
+    Emit the capsule set and the checked pair list.
+
+    A static pair list, decided here rather than at run time, is what the
+    ecosystem does too: MoveIt's SRDF <disable_collisions> block and
+    franka_description's *_sc sub-links are both precomputed. The pruning
+    rules (and why the radii are assumptions) are in model/collision.py.
+    """
+    caps = COLL.capsules(rb)
+    pairs, dropped = COLL.capsule_pairs(caps, explain=True)
+
+    def vec3(v):
+        #! Snapped like IK_DH_CA/SA above: these coordinates are built from
+        #! cos/sin(alpha_i) at multiples of pi/2, so exact zeros arrive as
+        #! 1e-17 residues. They would quantise to zero in Q16.16 anyway, but
+        #! a literal 0.0 keeps the generated header readable and keeps the
+        #! float and fixed builds from differing on a value that is meant to
+        #! be exactly zero.
+        return "{" + ", ".join(
+            c_double(0.0 if abs(x) < 1e-15 else x) for x in v) + "}"
+
+    cap_rows = "\n".join(
+        f"//! {i:^3} | {c.name:<11} | {c.frame:^5} | {c.node_a}-{c.node_b} | "
+        f"{c.length:8.5f} | {c.radius:6.3f}"
+        for i, c in enumerate(caps))
+    drop_rows = "\n".join(
+        f"//!   {caps[i].name:<11} {caps[j].name:<11} {why}"
+        for i, j, why in dropped)
+
+    pa = ",\n    ".join(vec3(c.pa) for c in caps)
+    pb = ",\n    ".join(vec3(c.pb) for c in caps)
+    fr = ", ".join(str(c.frame) for c in caps)
+    rr = ", ".join(c_double(c.radius) for c in caps)
+    pr = ", ".join("{" + f"{i}, {j}" + "}" for i, j in pairs)
+
+    return f"""
+//! ---------------- capsule collision model ----------------
+//
+//! One capsule per non-degenerate DH limb, each RIGID in one DH frame, so it
+//! has a single point Jacobian:
+//
+//!     o_i     = (0, 0, 0)                            in frame i
+//!     P_i     = (-a_i, 0, 0)                         after Tz, before Tx
+//!     o_{{i-1}} = P_i - d_i * (0, sin alpha_i, cos alpha_i)
+//
+//! all three constant, because theta_i only rotates frame i itself. The
+//! obvious alternative - a segment between consecutive frame origins - is
+//! NOT a rigid body and has no single point Jacobian. See
+//! model/collision.py.
+//
+//! idx | name        | frame | node | length   | radius
+//! ----+-------------+-------+------+----------+-------
+{cap_rows}
+//
+//! RADII ARE CHOSEN, NOT CITED. model/collision.py:LINK_RADIUS explains
+//! what that costs: a negative clearance is a real finding, a positive one
+//! is not a proof of clearance.
+//
+//! Pairs pruned from the check, and why:
+{drop_rows}
+//
+
+#define IK_CAP_COUNT {len(caps)}
+#define IK_COLL_PAIR_COUNT {len(pairs)}
+
+//! Capsule endpoints in their own frame's coordinates.
+static const double IK_CAP_PA[IK_CAP_COUNT][3] = {{
+    {pa}
+}};
+static const double IK_CAP_PB[IK_CAP_COUNT][3] = {{
+    {pb}
+}};
+
+//! Frame each capsule is rigid in: an index into the DH chain, so the point
+//! Jacobian's non-zero columns are joints 0 .. IK_CAP_FRAME-1.
+static const int IK_CAP_FRAME[IK_CAP_COUNT] = {{{fr}}};
+static const double IK_CAP_RADIUS[IK_CAP_COUNT] = {{{rr}}};
+
+//! Capsule index pairs to check. Fixed at generation time, so the collision
+//! kernel's trip count is a compile-time constant and its latency does not
+//! depend on the configuration.
+static const int IK_COLL_PAIRS[IK_COLL_PAIR_COUNT][2] = {{{pr}}};
+"""
 
 
 def build(rb):
@@ -112,7 +200,7 @@ def build(rb):
 //! configurations.
 static const double IK_QLIM_LO[IK_DOF] = {{{", ".join(c_double(v) for v in rb.qlim[:, 0])}}};
 static const double IK_QLIM_HI[IK_DOF] = {{{", ".join(c_double(v) for v in rb.qlim[:, 1])}}};
-
+{capsule_block(rb)}
 #endif  //! IK_GEOMETRY_HPP
 """
 

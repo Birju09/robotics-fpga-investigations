@@ -67,17 +67,28 @@ damping, `J⁺ = Jᵗ(JJᵗ + λ²I)⁻¹` is not a true pseudoinverse, so
 λ² / (σᵢ² + λ²)
 ```
 
-for singular values `σᵢ` of `J`. At the default `λ = 0.02` (so
-`λ² = 4×10⁻⁴`) and a well-conditioned `σ ≈ 0.3`, that is ≈ 0.4% — the
-avoidance term is attenuated by roughly 200×. **Prediction: at `m = 6` the
-collision term does essentially nothing, except near singularities where
-`σ → 0` and the leak approaches 1.**
+for singular values `σᵢ` of `J`. **Prediction: at `m = 6` the collision term
+does essentially nothing, except near singularities where `σ → 0` and the
+leak approaches 1.**
 
-This is a genuinely useful control. Run the identical kernel at `m = 6` and
-it should show near-zero avoidance authority away from singularities, and
-non-zero authority near them. If `m = 6` shows large avoidance effects, the
-implementation is wrong — probably the projector. Free to measure, and it
-falsifies a whole class of bug.
+**Now measured** (`model/validate.py`, `[Nullspace projector]`, λ = 0.02,
+300 random configurations, `‖Nz‖/‖z‖` for random `z`):
+
+| m | median | max |
+|---|---|---|
+| 3 | 0.726 | 0.986 |
+| 6 | 0.021 | 0.859 |
+
+So a full-pose task retains about 2% of the avoidance direction against 73%
+for position-only — a 35× difference in authority — and the `m = 6` maximum
+of 0.86 is the predicted blow-up at near-singular configurations. The
+control behaves as the algebra says it should.
+
+This is a genuinely useful control. If `m = 6` ever shows large avoidance
+effects *away* from singularities, the implementation is wrong — probably
+the projector. Free to measure, and it falsifies a whole class of bug.
+`validate.py` asserts the stronger statement it comes from, `J_t N =
+λ²(J_t J_tᵗ + λ²I)⁻¹ J_t`, which holds to 6×10⁻¹⁵.
 
 ### (c) Not proposed
 
@@ -280,12 +291,45 @@ the area report rather than assuming either way.
 Approximate each physical link by a **capsule** (segment + radius), and each
 static obstacle by a **box (OBB)**, **sphere**, or **capsule**.
 
-The golden model is already written. `model/ik_model.py:self_clearance()`
-already reduces the arm to a 5-segment skeleton with coincident DH frames
+The golden model is already half written. `model/ik_model.py:self_clearance()`
+already reduces the arm to a segment skeleton with coincident DH frames
 merged (`a5 = d5 = 0` puts frames 4 and 5 at the wrist centre) and already
-computes segment-segment distance in `_seg_dist`. **A capsule is exactly
-that skeleton with a radius added** — capsule distance is segment distance
-minus the two radii, exactly, with no approximation to argue about.
+computes segment-segment distance in `_seg_dist`. Capsule distance is
+segment distance minus the two radii, exactly, with no approximation to
+argue about.
+
+**Correction to an earlier draft of this document, found while building
+`model/collision.py`.** It is *not* true that a capsule is "exactly that
+skeleton with a radius added", and the difference matters for the gradient.
+A segment running from `o_{i-1}` to `o_i` is **not a rigid body**: `o_{i-1}`
+is fixed in frame `i-1`, `o_i` is fixed in frame `i`, and the segment
+between them shears as `θ_i` moves. It therefore has no single point
+Jacobian, and the plan in §5 depends on there being one.
+
+Decomposing each DH step into its two limbs fixes this exactly. Since
+`T_{i-1,i} = Rz(θ_i) Tz(d_i) Tx(a_i) Rx(α_i)`, in frame `i`:
+
+```
+o_i     = (0, 0, 0)                               the joint centre
+P_i     = (-a_i, 0, 0)                            after Tz, before Tx
+o_{i-1} = P_i - d_i · (0, sin α_i, cos α_i)
+```
+
+All three are **constant** — `θ_i` only rotates frame `i` itself. So the
+polyline `o_{i-1} → P_i → o_i` is rigid in frame `i`, giving two capsules
+(the `d` limb along `z_{i-1}`, the `a` limb along `x_i`), each with one point
+Jacobian whose non-zero columns are the joints preceding that frame. One
+witness point, one gradient, straight out of the `zax[]`/`org[]` registers —
+which is what §3 claimed and what the naive skeleton would not have
+delivered.
+
+This is also how the ecosystem models it: `franka_description`'s coarse
+`*_sc` geometry is sphere and cylinder sub-links rigidly attached to a link
+frame, not a skeleton polyline.
+
+On the PUMA 560 this yields **6 capsules** (step 5 is fully degenerate and
+emits none; `a1 = d2 = a4 = a6 = 0` drop one limb each from steps 1, 2, 4
+and 6).
 
 That function has also already earned its keep: it retired the original
 pentagon trajectory, which crossed itself to within 4 µm (see the header
@@ -346,17 +390,46 @@ No runtime broad phase. Emit the pair list at generation time, exactly as
 the ecosystem does — MoveIt's SRDF `<disable_collisions>` is a static
 precomputed "never check these" set:
 
-- extend `model/gen_geometry.py` to emit `IK_COLL_PAIRS` (link index pairs
-  plus radii), derived from `RobotModel` by the same adjacency rule
-  `self_clearance()` already implements — drop pairs sharing an endpoint;
+- `model/gen_geometry.py` emits `IK_CAP_*` and `IK_COLL_PAIRS`, derived from
+  `RobotModel` — **done**;
 - obstacles arrive over AXI4-Lite as a fixed-size array of primitives with a
   type tag and a count, with `IK_MAX_OBSTACLES` setting the area/generality
   trade the way `IK_DLS_MAX_ITER` does.
 
-On the PUMA's 5-segment skeleton, adjacency pruning leaves 3 self pairs
-(the count `self_clearance()`'s double loop already produces). Obstacles add
-`5 × IK_MAX_OBSTACLES`. That is a small number — the self-collision half is
-nearly free, and `IK_MAX_OBSTACLES` is the knob that decides the cost.
+Pruning needs **two** rules, not one, and the second was not anticipated:
+
+1. **Shared node** — the rule `self_clearance()` states. Two capsules
+   meeting at a joint have zero segment distance there by construction.
+   Adjacency must be decided on *deduplicated skeleton nodes*, not on frame
+   index: a frame-index gap looks sufficient and is not, because `a5 = d5 =
+   0` means frames 4 and 6 are two apart yet physically share the wrist
+   centre. Any arm with a degenerate DH step has this hole.
+2. **Unseparable** — the skeleton path between two capsules is shorter than
+   the sum of their radii, so their surfaces overlap *even fully extended*:
+   no configuration clears them. `self_clearance()` needs no analogue
+   because at zero radius the floor for a once-separated pair is the
+   intervening limb's length, small but positive; adding radii turns that
+   floor negative wherever a link is shorter than the surrounding parts are
+   thick. On the PUMA exactly one pair trips it — `link3_d/link4_d`,
+   separated by the 20.3 mm `a3` elbow offset while the radii sum to 125 mm.
+   Without this rule that pair is permanently the minimum at −0.105 m and
+   masks every real collision. The physical arm has no gap there either; the
+   elbow is one casting.
+
+Rule 2 is radius-dependent, so changing `LINK_RADIUS` can change the pair
+list — `capsule_pairs(explain=True)` reports what was dropped and why, and
+the generated header records it.
+
+Result on the PUMA: **6 capsules, 15 candidate pairs, 6 pruned, 9 checked.**
+Obstacles would add `6 × IK_MAX_OBSTACLES`. The self-collision half is
+nearly free; `IK_MAX_OBSTACLES` is the knob that decides the cost.
+
+**The radii are chosen, not cited.** No published cross-section table for the
+PUMA 560 is used anywhere in this project. `model/collision.py:LINK_RADIUS`
+states the consequence and `validate.py` repeats it: a *negative* clearance
+is a real finding, a positive one is not a proof of clearance. This is
+`self_clearance()`'s own caveat moved from "no radius at all" to "an assumed
+radius", which is an improvement but not a measurement.
 
 ### Return witness points from the start
 
@@ -597,24 +670,35 @@ the baseline it is supposed to be compared against.
 
 ---
 
-## 9. Proposed order of work
+## 9. Order of work
 
-1. **`spd::solve()` → `spd::factor()` + `spd::substitute()`**, with
-   `tb_spd.cpp` extended to two right-hand sides against one factorisation,
-   and bit-exactness against the fused version asserted. *No new
-   functionality, standalone value, unblocks everything else.*
-2. **Task relaxation alone, no collision.** Promote `m`/`k` to the
-   `mulM[]`/`mulK[]` pattern at the `MULT` call site, add `m` as a runtime
-   register, and verify that `m = 6` is bit-identical to today while `m = 3`
-   solves position-only poses. *Cheap, and it proves the reduced-task path
-   before any geometry exists.*
-3. **Capsule distance in the golden model.** Radii on `RobotModel`, pairs
-   from `gen_geometry.py`, `_seg_dist` promoted from proxy to check,
-   gradient and `J_t · Nz ≈ 0` validated numerically. *No HLS.*
-4. **Stage 0 — `coll_dist_kernel`** as a standalone packaged IP, synthesised
-   and timed. *This is the go/no-go for the part.* Also closes STATUS.md's
-   open item that the random 48-pose table has never been checked against
-   the self-collision proxy (~5% of a uniform `qlim` sample fails it).
+Branch: `nullspace-collision-ik`.
+
+1. **DONE — `spd::solve()` → `spd::factor()` + `spd::substitute()`**, plus
+   `spd::solve_n()` sharing one substitution instance across right-hand
+   sides. `tb_spd.cpp` asserts bit-exactness against the fused version:
+   `factor+substitute == solve` over 3240 values, `solve_n == solve` over
+   6480, zero differing.
+2. **DONE — task relaxation, no collision.** `m` and `k` promoted to the
+   `mulM[]`/`mulK[]` table at the `MULT` call site; `task_dim` is a runtime
+   register and an AXI4-Lite argument. `IK_TASK_FULL` asserted bit-identical
+   to the pre-existing path over 1536 values; `IK_TASK_POS` converges 256/256
+   on the vector table; `task_dim = 5` refused with `IK_ERR_BADDIM`.
+   Position-only iterations come in at min 2 / median 3 / p95 4 / max 5,
+   against 3 / 4 / 6 / 26 for the full pose.
+3. **DONE — capsule distance and clearance gradient in the golden model.**
+   `model/collision.py`; `LINK_RADIUS` on the robot; `IK_CAP_*` /
+   `IK_COLL_PAIRS` emitted by `gen_geometry.py` (geometry header version 2).
+   `validate.py` checks: closed-form distance never exceeds brute force over
+   2360 segment pairs including degenerate cases (0.0), agreement with
+   `ik_model._seg_dist` (0.0), analytic vs numerical `∂d/∂q` (6.9×10⁻¹¹ over
+   370 of 400 samples, the rest skipped at genuine non-differentiabilities),
+   and the damped-projector identity (6×10⁻¹⁵).
+4. **NEXT — Stage 0, `coll_dist_kernel`** as a standalone packaged IP,
+   synthesised and timed. *This is the go/no-go for the part.* Also closes
+   STATUS.md's open item that the random 48-pose table has never been checked
+   against the self-collision proxy (~5% of a uniform `qlim` sample fails
+   it).
 5. **Stage 1 — nullspace repulsion at `m = 3`**, single minimum-clearance
    pair, and the four-part measurement of §6.
 6. **Stage 2 — `m = 5`** free-tool-spin mode, and the `m ∈ {3,5,6}` sweep.
@@ -624,6 +708,9 @@ the baseline it is supposed to be compared against.
    substituting for a collision model).
 
 Steps 1–4 each have standalone value and none of them commits to the rest.
+Nothing through step 3 has been near a synthesis tool: all of it is the host
+regression and the Python model, so **every area and latency claim in §7
+remains unverified.**
 
 ---
 
