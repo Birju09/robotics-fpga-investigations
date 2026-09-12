@@ -31,16 +31,73 @@ MAX_ITER = 64
 # ---------------------------------------------------------------------------
 # Pentagon trajectory (see _pentagon_traj)
 # ---------------------------------------------------------------------------
-# Widest pentagon keeping elbow conditioning |sin gamma| > 0.45 everywhere, so
-# the workload measures tracking rather than ill-conditioning. Re-run
-# model/plot_dh.py after changing these.
-TRAJ_CENTRE = (0.40, 0.0)     # metres, base x-y plane
-TRAJ_Z = 0.15                 # tool-tip height above base plane
-TRAJ_RADIUS = 0.20            # circumradius of the pentagon
-TRAJ_STEPS = 100              # samples per edge -> 500 poses, ~2.35mm/step
+# Sited by search, gated on FOUR conditions every sample must satisfy - not
+# just the elbow conditioning this comment used to name alone:
+#
+#   1. reachable (ik_analytic succeeds)
+#   2. elbow conditioning |sin gamma| > 0.45, so the workload measures
+#      tracking rather than ill-conditioning
+#   3. self_clearance() > MIN_SELF_CLEARANCE (below) - see that function's
+#      docstring for what it does and does not prove
+#   4. every joint's joint_margin_rad() > 0 against ROBOT.qlim
+#
+# (3) and (4) were NOT checked when this workload was first sited, and the
+# pentagon that shipped and ran on hardware (cx=0.40, z=0.15, R=0.20,
+# TRAJ_YAW_DEG unchanged, branch (+,+,+)) failed both:
+#
+#   - Self-collision: that pentagon's low z (0.15 m, well below the a2/d1
+#     shoulder height of 0.67 m) drove theta2 through -90 deg once per lap,
+#     where the shoulder-offset link sweeps across the base pedestal's own
+#     axis - see self_clearance()'s docstring. Refined search located the
+#     true minimum at 4 um (not the 0.17 mm the 100-sample grid suggested),
+#     i.e. the zero-radius skeleton actually crosses itself, not merely
+#     comes close.
+#   - Joint limit: independently of position, commanding roll=pi exactly
+#     (the "(pi, 0, psi)" convention below) makes the tool's approach vector
+#     [0,0,-1] in EVERY frame regardless of yaw, so on the (+,+,+) branch
+#     theta4 is a function of position only, not yaw, and it sat at almost
+#     exactly +-180 deg for the entire lap - 10 deg past the physical
+#     theta4 limit of +170 deg, for all 500 samples, not just near one
+#     vertex. Both the analytic branch and the actual DLS solution
+#     (qgold and qdls) hit this, since it is an orientation fact, not a
+#     branch-selection artefact.
+#
+# Neither is a fixed-point or solver bug: both are properties of the
+# commanded WORKLOAD, present at full double precision in the reference
+# model, and neither was caught because nothing checked for them - the
+# random 48-pose table's joints are sampled directly inside ROBOT.qlim so it
+# cannot exhibit (4), but it is not checked against (3) either (see
+# STATUS.md, which is why it is called out as a separate open item rather
+# than fixed here: fixing it changes that table's content and invalidates
+# its own hardware numbers, and this pass only asked about the trajectory).
+#
+# The branch was also changed, from (shoulder+, elbow+, wrist+) to
+# (shoulder+, elbow-, wrist+): elbow-DOWN is what actually removes the
+# theta2=-90 crossing at this workload's height (a low target is naturally
+# an elbow-down reach; forcing elbow-up down there is what drove theta2
+# vertical in the first place). The wrist sign turned out not to matter
+# structurally - every branch has SOME point where theta4 crosses the wrap
+# boundary, it just moves which point - so it is set to whichever left the
+# analytic-branch cfg unchanged (cfg bit 4 still set) rather than for any
+# geometric reason.
+TRAJ_CENTRE = (0.29, 0.0)     # metres, base x-y plane
+TRAJ_Z = 0.18                 # tool-tip height above base plane
+TRAJ_RADIUS = 0.15            # circumradius of the pentagon
+TRAJ_STEPS = 100              # samples per edge -> 500 poses, ~1.76mm/step
 # Yaw at each vertex, deg about vertical tool axis; interpolated linearly
 # along each edge so orientation never turns discontinuously.
 TRAJ_YAW_DEG = (0.0, 90.0, 0.0, 90.0, 0.0)
+# Analytic branch the trajectory is solved on throughout - see above.
+TRAJ_SHOULDER, TRAJ_ELBOW, TRAJ_WRIST = +1, -1, +1
+TRAJ_CFG = ((1 if TRAJ_SHOULDER > 0 else 0) | (2 if TRAJ_ELBOW > 0 else 0) |
+           (4 if TRAJ_WRIST > 0 else 0))
+
+# Proxy for a real link/pedestal radius, which nothing in this project
+# models (see ik_model.self_clearance()). 50 mm is conservative for this
+# arm's scale (links 150-670 mm long) without being so tight it can't be
+# cleared by siting search; treat any number here as illustrative, not
+# measured, and re-tighten it if real link geometry is ever added.
+MIN_SELF_CLEARANCE = 0.05
 
 
 def fx(x):
@@ -415,6 +472,15 @@ def _pentagon_traj():
     Seeding is chained (sample i from sample i-1's DLS solution, sample 0
     from the last - closed loop); emitted values are the SECOND lap so
     sample 0 has a genuine predecessor rather than a cold-start outlier.
+
+    Every sample is checked against ik_model.self_clearance() and
+    ik_model.joint_limit_margins() below, in addition to the reachability
+    and elbow-conditioning checks already present - see the TRAJ_* comment
+    block above for why, and STATUS.md for what the previous, unchecked
+    siting actually did on hardware. These are hard guards, not warnings:
+    a re-siting that reopens either problem should fail generation loudly
+    here rather than ship a workload that quietly asks for something the
+    arm cannot do.
     """
     cx, cy = TRAJ_CENTRE
     # Vertex 0 at top (+y): symmetric about x axis, pentagon in front of shoulder.
@@ -439,16 +505,31 @@ def _pentagon_traj():
     Ts = [_pose_to_T(p) for p in poses]
     qgold = []
     for i, T in enumerate(Ts):
-        qs, ok = M.ik_analytic(T, +1, +1, +1)
+        qs, ok = M.ik_analytic(T, TRAJ_SHOULDER, TRAJ_ELBOW, TRAJ_WRIST)
         if not ok:
             raise RuntimeError(
                 f"pentagon sample {i} at {poses[i][:3]} is out of reach - "
                 "adjust TRAJ_CENTRE/TRAJ_RADIUS/TRAJ_Z")
+        clr = M.self_clearance(qs)
+        if clr < MIN_SELF_CLEARANCE:
+            raise RuntimeError(
+                f"pentagon sample {i} at {poses[i][:3]} self-clearance "
+                f"{clr*1000:.3f} mm < {MIN_SELF_CLEARANCE*1000:.0f} mm - "
+                "adjust TRAJ_CENTRE/TRAJ_RADIUS/TRAJ_Z or the branch "
+                "(TRAJ_SHOULDER/ELBOW/WRIST); see ik_model.self_clearance()")
+        margins = M.joint_limit_margins(qs)
+        if margins.min() < 0.0:
+            j = int(margins.argmin())
+            raise RuntimeError(
+                f"pentagon sample {i} at {poses[i][:3]} violates joint "
+                f"{j + 1}'s limit by {np.degrees(-margins[j]):.2f} deg - "
+                "adjust TRAJ_CENTRE/TRAJ_RADIUS/TRAJ_Z, the branch, or "
+                "TRAJ_YAW_DEG; see ik_model.joint_limit_margins()")
         qgold.append(qs)
 
     # Two laps: lap 0 warms the chain up, lap 1 is what gets emitted.
     q = qgold[0]
-    for _lap in range(2):
+    for lap in range(2):
         seeds, qdls, iters = [], [], []
         for i, T in enumerate(Ts):
             seeds.append(q)
@@ -458,12 +539,28 @@ def _pentagon_traj():
                 raise RuntimeError(
                     f"pentagon sample {i} did not converge in {MAX_ITER} "
                     "iterations from its predecessor's solution")
+            if lap == 1:
+                # DLS is an unconstrained least-squares solve - qlim is not
+                # part of its objective - so a chain that starts inside the
+                # limits is not thereby guaranteed to stay there. It has, in
+                # practice, tracked qgold closely enough not to matter, but
+                # that is an empirical finding about this workload, not a
+                # property of the solver, so it is checked rather than
+                # assumed on the values actually run on hardware.
+                margins = M.joint_limit_margins(qd)
+                if margins.min() < 0.0:
+                    j = int(margins.argmin())
+                    raise RuntimeError(
+                        f"pentagon sample {i}: DLS solution violates joint "
+                        f"{j + 1}'s limit by {np.degrees(-margins[j]):.2f} "
+                        "deg even though the analytic branch does not - "
+                        "the chain drifted off the safe branch")
             qdls.append(q_arr(qd))
             iters.append(int(it))
             q = qd
 
     return [{"pose": poses[i], "seed": q_arr(seeds[i]), "qgold": qgold[i],
-             "qdls": qdls[i], "iters": iters[i], "cfg": 1 | 2 | 4,
+             "qdls": qdls[i], "iters": iters[i], "cfg": TRAJ_CFG,
              "edge": edges[i], "vtx": is_vtx[i]}
             for i in range(len(poses))]
 

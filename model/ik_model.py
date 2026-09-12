@@ -284,6 +284,108 @@ def shoulder_conditioning(T):
     return float(np.sqrt(disc) / rho)
 
 
+def joint_margin_rad(q_i, lo, hi):
+    """
+    Signed distance from q_i to the allowed interval [lo, hi], correctly
+    handling the +-pi wrap for a single-turn joint (hi - lo < 2*pi).
+
+    This is NOT the same as min(q_i - lo, hi - q_i) evaluated on q_i's
+    principal value. That naive form picks up whichever of +180 deg/-180 deg
+    floating-point noise happens to produce and reports wildly different
+    margins for the same physical angle - found while sitting the pentagon
+    trajectory (model/gen_vectors.py), where q4 sat exactly at the wrap
+    boundary and the naive check alternately reported -10 deg and -70 deg
+    for what is the same 10-degree overshoot. Positive means inside by this
+    many radians; negative means outside by this many, via the shorter arc.
+
+    A joint whose range already spans a full turn (hi - lo >= 2*pi, e.g. a
+    multi-turn wrist roll) cannot be treated this way - there is no unique
+    "shorter arc" - so it falls back to the plain linear check.
+    """
+    if hi - lo >= 2 * np.pi - 1e-9:
+        return min(q_i - lo, hi - q_i)
+    mid = 0.5 * (lo + hi)
+    d = ((q_i - mid + np.pi) % (2 * np.pi)) - np.pi
+    qq = mid + d
+    if qq < lo:
+        return qq - lo
+    if qq > hi:
+        return hi - qq
+    return min(qq - lo, hi - qq)
+
+
+def joint_limit_margins(q, qlim=None):
+    """Per-joint joint_margin_rad(), against ROBOT.qlim unless given."""
+    if qlim is None:
+        qlim = ROBOT.qlim
+    return np.array([joint_margin_rad(q[i], qlim[i, 0], qlim[i, 1])
+                      for i in range(6)])
+
+
+def _seg_dist(p0, p1, q0, q1):
+    """Minimum distance between line segments p0-p1 and q0-q1 in R^3."""
+    d1, d2, r = p1 - p0, q1 - q0, p0 - q0
+    a, e, f = d1 @ d1, d2 @ d2, d2 @ r
+    if a <= 1e-12 and e <= 1e-12:
+        return float(np.linalg.norm(p0 - q0))
+    if a <= 1e-12:
+        s, t = 0.0, np.clip(f / e, 0.0, 1.0)
+    else:
+        c = d1 @ r
+        if e <= 1e-12:
+            s, t = np.clip(-c / a, 0.0, 1.0), 0.0
+        else:
+            b = d1 @ d2
+            denom = a * e - b * b
+            s = np.clip((b * f - c * e) / denom, 0.0, 1.0) if abs(denom) > 1e-12 else 0.0
+            t = (b * s + f) / e
+            if t < 0.0:
+                t, s = 0.0, np.clip(-c / a, 0.0, 1.0)
+            elif t > 1.0:
+                t, s = 1.0, np.clip((b - c) / a, 0.0, 1.0)
+    return float(np.linalg.norm((p0 + s * d1) - (q0 + t * d2)))
+
+
+def self_clearance(q):
+    """
+    Minimum distance between any two non-adjacent PHYSICAL links of the
+    zero-radius kinematic skeleton at configuration q.
+
+    "Physical link" merges consecutive DH frames that coincide (a5 = d5 = 0
+    puts frames 4 and 5 at the same point, the spherical wrist centre), so
+    the reduced skeleton is 5 segments: pedestal, upper arm, the a3/d3
+    shoulder-offset segment, forearm, tool offset. Pairs of segments that
+    share an endpoint are adjacent and excluded; pairs separated by exactly
+    one physical link are included and are naturally floored at that link's
+    own length (its two endpoints are exactly that far apart, which is not a
+    collision - just the joint between them), so a genuine close approach
+    reads far below that floor rather than at it.
+
+    This is NOT a collision check. No link cross-section, tool, or pedestal
+    housing geometry is modeled anywhere in this project - only the
+    kinematic point skeleton. A small value here means the physical arm
+    WOULD interfere for any realistic link diameter; a large value does not
+    prove clearance, since real links have thickness this ignores entirely.
+    Found and used to retire a configuration where the pentagon trajectory
+    (model/gen_vectors.py) swept the shoulder-offset link across the base
+    pedestal's own axis (down to ~4 um) whenever theta2 crossed +-90 deg,
+    which a1 = 0 (shoulder joint sits directly above the waist axis, no
+    horizontal offset) makes a purely geometric certainty at that angle,
+    for any position.
+    """
+    origins = [T[:3, 3] for T in fk_all(q)]
+    nodes = [origins[0]]
+    for p in origins[1:]:
+        if np.linalg.norm(p - nodes[-1]) > 1e-9:
+            nodes.append(p)
+    m = len(nodes) - 1
+    best = np.inf
+    for a in range(m):
+        for b in range(a + 2, m):
+            best = min(best, _seg_dist(nodes[a], nodes[a + 1], nodes[b], nodes[b + 1]))
+    return best
+
+
 def ik_analytic_all(T):
     """All eight branches; returns list of (config_tuple, q)."""
     out = []
