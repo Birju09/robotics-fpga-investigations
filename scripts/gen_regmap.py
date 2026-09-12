@@ -26,11 +26,15 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 HLS_BUILD = os.path.join(ROOT, "hls", "build")
 OUT = os.path.join(ROOT, "sw", "src", "ik_regmap.h")
 
+#: One entry per packaged IP. Must match hls/Makefile's KERNELS - a kernel
+#: absent here silently gets no register map, and the first symptom is a
+#: driver that will not link rather than anything pointing back at this list.
 KERNELS = [
     "mat_mul_kernel",
     "mat_inv_kernel",
     "ik_analytic_kernel",
     "ik_dls_kernel",
+    "coll_dist_kernel",
 ]
 
 DEFINE_RE = re.compile(r"^\s*#define\s+(\S+)\s+(0x[0-9a-fA-F]+|\d+)\s*$")
