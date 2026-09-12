@@ -121,11 +121,10 @@ quantisation error is attributed separately from algorithmic error.
 |---|---|---|---|---|---|
 | analytic (PL) | 48 poses | 10716 ns | 10744 ns | 10781 ns | **1.00** |
 | DLS (PL) | 48 poses, disturbed | 52144 ns | 69378 ns | 380086 ns | **5.47** |
-| DLS (PL) | trajectory, tracking | 34913 ns | 35003 ns | 35092 ns | **1.00** |
+| DLS (PL) | trajectory, tracking | 34913 ns | 34990 ns | 35033 ns | **1.00** |
 
-The trajectory row predates a pentagon re-siting (self-collision and a joint-limit
-violation found and fixed in `model/gen_vectors.py`); the fixed-latency finding
-is expected to hold, the exact numbers are not yet re-confirmed (STATUS.md).
+Re-measured on the re-sited (collision-free) pentagon; the fixed-latency
+finding holds unchanged from the retired geometry.
 
 The analytic kernel's latency is a hardware constant. The DLS kernel's
 latency is wide when disturbed and collapses to fixed-latency while tracking
