@@ -176,13 +176,16 @@ and the closed-form solver that has none exists only for kinematically
 fortunate arms.
 
 A more realistic pitch than "replace the CPU" is a low-power offload
-coprocessor: the DLS kernel occupies ~180 of the device's 220 DSP48E1 slices
-and ~41k of 53.2k LUTs, clocked at 80 MHz against the A9's 667 MHz, so its
-dynamic power draw is plausibly well under the A9 core's, and offloading
-frees that core for the rest of the control loop rather than the IK solve.
-**This is a hypothesis, not a measurement** — no power figure (Vivado
-`report_power`, or on-board current draw) has been taken for this design,
-and it is listed as such in [STATUS.md](STATUS.md).
+coprocessor. Vivado's post-route `report_power` estimates the routed
+`ik_dls_kernel` logic at **0.282 W**, against **1.256 W** for the entire PS7
+domain (both A9 cores, caches, DDR controller) and **1.684 W** total on-chip
+— the PL kernel is a small fraction of what the processing system alone
+draws. This is a *vectorless* estimate (Medium confidence: no simulation
+activity file, so Vivado assumes default toggle rates rather than this
+kernel's actual iteration-dependent switching) and the PS7 figure is the
+whole processing system, not the isolated cost of running the reference
+solver on the A9 — so it is directional, not an apples-to-apples measurement
+against the CPU baseline. See [STATUS.md](STATUS.md).
 
 ---
 
