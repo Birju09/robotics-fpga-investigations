@@ -4,10 +4,16 @@ Running log of what is built, what has been measured on hardware, and what is
 open. `README.md` is the stable description of the project; this file is the
 part that changes every build.
 
-Last updated after running the trust-region `ik_dls_kernel` and the pentagon
-trajectory workload on hardware (`run.log`). Both were open at the previous
-revision; both now have measured numbers, recorded below. The analytic figures
-remain those of the earlier analytic-only bitstream.
+Last updated after **retargeting the project at a PUMA 560**. Every hardware
+number in this file predates that change and was measured on the previous
+0.71 m arm; they are kept for the structural findings and for comparison, and
+each section says so. Nothing here has been re-measured on the new geometry.
+
+The change and its motivation are in README §2.1 and §4.5. In short: the
+previous arm had no lateral shoulder offset, so the wrist centre could sit
+exactly on the joint-1 axis, where theta1 is undefined and `atan2(0, 0)`
+returned zero instead of failing. PUMA's `d3 = 149.09 mm` removes that by
+construction.
 
 ---
 
@@ -15,8 +21,11 @@ remain those of the earlier analytic-only bitstream.
 
 | | state |
 |---|---|
-| golden model (`model/validate.py`) | passing — 27,008 branch solutions, worst pose error 1.1e-13 |
-| host regression (`make -C hls host`) | passing — all four kernels, float build |
+| robot definition (`model/robot.py`) | PUMA 560, standard DH, provenance recorded per parameter |
+| URDF -> DH converter (`model/urdf_to_dh.py`) | passing — 4 round-trip cases to 1e-15, 3 malformed inputs rejected |
+| golden model (`model/validate.py`) | passing — 32,000 branch solutions, worst pose error 1.9e-13 |
+| host regression (`make -C hls host`) | passing — all four kernels, float build, new geometry |
+| **all hardware numbers below** | **stale — measured on the previous arm** |
 | `ik_analytic_kernel` | **on hardware**, 80 MHz, measured (pre-trust-region bitstream) |
 | `ik_dls_kernel` | **on hardware**, 80 MHz, measured with the trust region (`run.log`) |
 | pentagon trajectory workload | **on hardware**, 80 MHz, measured (`run.log`) |

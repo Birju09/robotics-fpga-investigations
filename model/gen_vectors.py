@@ -8,7 +8,7 @@ signed decimal so the C++ side can read them with a plain istream):
   matmul.txt        M K N ta tb  A[...]  B[...]  Cgold[...]
   matinv.txt        N  A[...]  Ainv_gold[...]
   fk.txt            q[6]  T[12]            (row-major 3x4)
-  ik_analytic.txt   pose[6] cfg  q_gold[6]  |sin(gamma)|
+  ik_analytic.txt   pose[6] cfg  q_gold[6]  |sin(gamma)|  root/rho
   ik_dls.txt        pose[6] qseed[6]  q_gold[6] iters_gold
 """
 
@@ -19,10 +19,12 @@ import ik_model as M
 OUT = os.path.join(os.path.dirname(__file__), "..", "hls", "tb", "vectors")
 rng = np.random.default_rng(0x1153)
 
-QLIM = np.array([
-    [-2.9, 2.9], [-1.9, 1.9], [-2.6, 2.6],
-    [-2.9, 2.9], [-1.9, 1.9], [-2.9, 2.9],
-])
+# The arm's own joint limits, from the robot definition rather than restated.
+# These are asymmetric (the elbow cannot swing equally both ways) and they do
+# the job a collision model would otherwise have to: a2 and L3 differ by less
+# than a millimetre on this arm, so bare link lengths would let the forearm
+# fold flat onto the upper arm, and only the q3 range forbids it.
+QLIM = M.ROBOT.qlim
 
 LAMBDA = 0.02
 TOL = 1e-3
@@ -31,9 +33,14 @@ MAX_ITER = 64
 # ---------------------------------------------------------------------------
 # Pentagon trajectory (see _pentagon_traj)
 # ---------------------------------------------------------------------------
-TRAJ_CENTRE = (0.35, 0.0)     # metres, in the base x-y plane
-TRAJ_Z = 0.10                 # tool-tip height above the base plane
-TRAJ_RADIUS = 0.10            # circumradius of the pentagon
+# Sited by search over the reachable set rather than picked: the centre,
+# height and radius below are the widest pentagon whose every sample keeps the
+# elbow conditioning |sin gamma| above 0.45, so no part of the path is near the
+# elbow singularity and the workload measures tracking rather than
+# ill-conditioning.  Re-run model/plot_dh.py after changing these.
+TRAJ_CENTRE = (0.40, 0.0)     # metres, in the base x-y plane
+TRAJ_Z = 0.15                 # tool-tip height above the base plane
+TRAJ_RADIUS = 0.20            # circumradius of the pentagon
 TRAJ_STEPS = 10               # samples per edge -> 5 * 10 = 50 poses
 # End-effector orientation at each vertex, degrees of yaw about the (vertical)
 # tool axis.  Interpolated linearly along each edge, so the tool reaches the
@@ -118,10 +125,15 @@ def gen_ik_analytic(n=256, path="ik_analytic.txt"):
         if not ok:
             continue
         cfg = (1 if sh > 0 else 0) | (2 if el > 0 else 0) | (4 if wr > 0 else 0)
-        # |sin(gamma)| lets the testbench tell an ill-conditioned pose from a
-        # wrong answer; see ik_model.elbow_conditioning().
+        # Two conditioning numbers, both letting the testbench tell an
+        # ill-conditioned pose from a wrong answer.  The elbow one is
+        # |sin(gamma)|; the shoulder one is root/rho, which only exists
+        # because the arm has a lateral offset - see the docstrings in
+        # ik_model.elbow_conditioning() and shoulder_conditioning().
         cond = M.elbow_conditioning(Tq, sh)
-        lines.append(row(pose) + f" {cfg} " + row(qs) + " " + row(cond))
+        cond_sh = M.shoulder_conditioning(Tq)
+        lines.append(row(pose) + f" {cfg} " + row(qs) + " " + row(cond)
+                     + " " + row(cond_sh))
         made += 1
     write(path, lines)
 
@@ -178,8 +190,11 @@ def gen_c_header(n=48, path=None):
             q[4] = rng.choice([1e-3, -1e-3, 2e-3])        # wrist singularity
             tag = "wrist-singular"
         else:
-            # Push the wrist centre close to full extension.
-            q[2] = M.wrap_pi(M.PHI + rng.uniform(-0.02, 0.02))
+            # Push the wrist centre close to full extension.  sin(gamma) = 0
+            # is theta3 = -PHI on this arm, not +PHI: alpha3 is negative, so
+            # theta3 = gamma - PHI.  Verified against elbow_conditioning()
+            # rather than assumed - at +PHI it returns 0.094, at -PHI exactly 0.
+            q[2] = M.wrap_pi(-M.PHI + rng.uniform(-0.02, 0.02))
             tag = "elbow-extended"
         q = q_arr(q)
         T = M.fk(q)

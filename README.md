@@ -34,8 +34,15 @@ iteration. The chained fixed-point solve is shown to be numerically stable over
 one lap, with cumulative drift from the double-precision reference peaking at
 152 µrad (approximately ten Q16.16 LSB) and subsequently decreasing.
 
-These results are single-run measurements on one device and are qualified
-accordingly in [Threats to validity](#7-threats-to-validity).
+**These measurements predate a change of manipulator.** They were taken on an
+earlier 0.71 m arm with no lateral shoulder offset; the model, kernels and
+workloads have since been retargeted at the PUMA 560 described in §2.1, and
+§5's figures have not yet been reproduced on it. They are retained because the
+structural findings — that all latency variance is iteration count, and that
+the tracking and disturbed cases differ by most of an order of magnitude — are
+properties of the solvers rather than of the arm, and are expected to survive.
+The specific numbers are not. See §5.0 and [Threats to
+validity](#7-threats-to-validity).
 
 ---
 
@@ -73,24 +80,81 @@ motivated the hardware study reported here.
 
 ### 2.1 Manipulator and conventions
 
-A 6R anthropomorphic arm with a spherical wrist, described by standard (distal)
-Denavit–Hartenberg parameters:
+A PUMA 560: a 6R anthropomorphic arm with a spherical wrist, described by
+standard (distal) Denavit–Hartenberg parameters.
 
-| i | aᵢ (m) | αᵢ | dᵢ (m) |
-|---|---|---|---|
-| 1 | 0.05 | +π/2 | 0.15 |
-| 2 | 0.30 | 0 | 0 |
-| 3 | 0.02 | +π/2 | 0 |
-| 4 | 0 | −π/2 | 0.28 |
-| 5 | 0 | +π/2 | 0 |
-| 6 | 0 | 0 | 0.08 |
+| i | aᵢ (m) | αᵢ | dᵢ (m) | qᵢ limits |
+|---|---|---|---|---|
+| 1 | 0 | +π/2 | 0.6718 | −160°…+160° |
+| 2 | 0.4318 | 0 | 0 | −225°…+45° |
+| 3 | 0.0203 | −π/2 | 0.15005 | −45°…+225° |
+| 4 | 0 | +π/2 | 0.4318 | −110°…+170° |
+| 5 | 0 | −π/2 | 0 | −100°…+100° |
+| 6 | 0 | 0 | 0.0565 | −266°…+266° |
+
+`a`, `α`, `d₃` and `d₄` are the published PUMA 560 table (Corke's Robotics
+Toolbox `mdl_puma560`; equivalent to Craig §3.6), together with the
+manufacturer joint limits. The arm was dimensioned in inches and the canonical
+values are exact conversions — `a₂` = 17.00 in, `a₃` = 0.80 in, `d₃` = 5.87 in,
+`d₄` = 17.05 in — which is a useful check that a table has not been corrupted
+in transcription.
+
+`d₁` and `d₆` are **not** from that table, where both are zero: the canonical
+table puts frame 0 at the shoulder and the tool point at the wrist centre. They
+are this project's additions — a pedestal height so poses have a mounting face
+to be measured against, and a tool offset so the orientation half of the IK
+problem is non-degenerate — and `robot.py` records them as additions rather
+than as PUMA parameters.
+
+The single load-bearing parameter is **`d₃`, the lateral shoulder offset**. It
+is what stops the wrist centre reaching the joint-1 axis, where θ₁ is
+undefined; it converts a reachable singularity into an unreachable cylinder of
+radius `|d₃|`. §4.5 covers what that does and does not buy.
 
 Pose is represented as `{x, y, z, roll, pitch, yaw}` with
 `R = Rz(yaw)·Ry(pitch)·Rx(roll)`. All quantities crossing the AXI4-Lite
 interface are signed Q16.16 (`value = raw / 65536`).
 
-`model/ik_model.py` is the normative statement of these conventions; every
-other artefact in the repository is validated against it.
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/figures/dh_frames_dark.svg">
+  <img alt="Left: the PUMA 560 arm drawn in three dimensions with a coordinate triad at each of the seven DH frames, joint variables theta-1 to theta-6 labelled on the joint axes. Right: a dimensioned side elevation giving a2 = 0.4318, a3 = 0.0203, d1 = 0.6718, d4 = 0.4318, d6 = 0.0565 metres and the lateral offset d3 = 0.15005 into the page, with the effective forearm L3 = 0.4323 m at phi = 87.31 degrees." src="docs/figures/dh_frames.svg" width="100%">
+</picture>
+
+**Figure 1.** Frame assignment and link dimensions. Both panels are generated
+by `model/plot_dh.py`, which obtains every frame and every length by calling
+`ik_model.fk_all()` rather than restating the DH table, so the figure cannot
+disagree with the kinematics the solvers are built from. Two structural
+features are visible and both are load-bearing later: frames {4} and {5} share
+an origin exactly, since `a₅ = d₅ = 0`, which is what makes the wrist spherical
+and permits the closed-form solver to decouple position from orientation; and
+{2} and {3} are held apart by `d₃`, the lateral offset that keeps the wrist
+centre off the joint-1 axis. `a₃ = 0.0203` against `d₄ = 0.4318` makes the
+effective forearm `L₃ = hypot(a₃, d₄) = 0.4323` sit at `φ = 87.31°`, the offset
+the closed form removes when it recovers `θ₃ = γ − φ`.
+
+### 2.2 Where the geometry lives
+
+`model/robot.py` is the single declarative source. It carries the DH table,
+the joint limits, the provenance of each group of numbers, and the structural
+assumptions a closed-form solver is entitled to make
+(`check_analytic_form()`, which tests the pattern of zeros `iks::analytic()`
+is derived against and raises rather than letting a bad table surface as wrong
+joint angles).
+
+Everything downstream reads from it. `model/ik_model.py` for the reference
+model, `model/gen_vectors.py` for the workloads, `model/plot_dh.py` for
+Figure 1, and `model/gen_geometry.py`, which emits
+`hls/include/ik_geometry.hpp` — so the constants the kernels compile against
+are generated rather than maintained in parallel. That mattered enough to
+automate: a silent divergence between the Python reference and the C++ kernel
+does not present as a build error, it presents as quantisation error, which is
+the quantity this project exists to measure.
+
+`model/urdf_to_dh.py` produces a `RobotModel` from a URDF, so a URDF-derived
+arm is not a special case downstream. See §4.5.
+
+`model/ik_model.py` remains the normative statement of the kinematic
+conventions; every other artefact is validated against it.
 
 ### 2.2 Synthesised IP
 
@@ -125,6 +189,7 @@ hls/cfg/        Vitis HLS 2025.2 configuration files, one per packaged IP
 scripts/        Vivado block design, register-map extraction, Vitis application build
 sw/src/         bare-metal driver and timing harness
 docs/           technical manual and timing methodology
+docs/figures/   generated figures (model/plot_dh.py)
 ```
 
 ---
@@ -275,7 +340,36 @@ the reference model's own DLS result from the same seed. Checked against the
 analytic branch, this column reported approximately 3.1 rad of apparent error on
 poses solved to within 1e-4 m.
 
-### 4.4 A characterised accuracy limitation
+### 4.4 Deriving the table from a URDF
+
+`model/urdf_to_dh.py` converts a URDF into a `RobotModel`. URDF places frames
+wherever the CAD put them; DH places them where the geometry requires — z on
+the joint axis, x along the common normal between consecutive axes — and buys
+four parameters per joint instead of six in exchange for that rigidity. The
+module performs the re-framing: parse the joint tree, reduce it to the serial
+chain, express each joint axis as a line at q = 0, then run the common-normal
+construction, handling the skew, intersecting and parallel cases separately
+(for parallel axes the common normal is *not* unique and a convention has to
+be imposed).
+
+Two properties are worth stating because they govern how the output may be
+used. First, **DH parameters are not unique** — axis flips and the
+parallel-axis convention both admit different tables for the same arm — so
+comparing tables is not a valid test of a converter and comparing forward
+kinematics is. `from_urdf()` therefore verifies its own output against the
+URDF's FK over 200 random configurations and raises rather than returning an
+unchecked table. Second, **a general URDF has no DH form at all**: trees,
+closed loops and prismatic joints are rejected explicitly rather than
+converted into something plausible.
+
+The self-test (`python3 model/urdf_to_dh.py`) is a round-trip corpus built by
+emitting URDFs *from* known DH tables and converting them back, which keeps it
+hermetic and lets it cover the awkward cases deliberately — parallel axes,
+intersecting axes, zero link lengths — since that is where a common-normal
+construction actually breaks. All four cases currently round-trip to 1e-15,
+and the three malformed inputs are all rejected.
+
+### 4.5 Two characterised conditioning limits
 
 Near the elbow singularity the analytic solver's joint output degrades while
 its pose output does not. Since γ = acos(cos γ) has slope 1/|sin γ|, as the arm
@@ -286,14 +380,67 @@ attained to 1.5e-5 m and 2.2e-5 rad.
 
 This is a conditioning property rather than an implementation defect: the
 elbow-up and elbow-down branches merge in that region, so joint space is
-genuinely not well determined there. The testbench asserts the pose round-trip
-on every vector without exception and asserts joint agreement only where
-|sin γ| ≥ 0.05, reporting the remainder separately.
-`model/ik_model.elbow_conditioning()` computes the quantity.
+genuinely not well determined there.
+
+**The shoulder has a second, independent one, and it is the price of `d₃`.**
+The lateral offset removes the singularity a zero-offset arm has where the
+wrist centre meets the joint-1 axis. It does not remove it for free. It
+replaces a singular *line* with a singular *cylinder* of radius `|d₃|` that the
+arm cannot enter, and leaves a boundary layer just outside it in which θ₁ is
+finite but ill-conditioned, because
+
+```
+theta1 = atan2(pc_y, pc_x) + atan2(d3, root),   root = sqrt(rho^2 - d3^2)
+d(theta1)/d(rho) = -d3 / (rho * root)      ->  diverges as root -> 0
+```
+
+`model/ik_model.shoulder_conditioning()` returns `root/rho ∈ [0, 1]`, the
+direct analogue of the elbow's `|sin γ|`. Measured over the 256-vector
+fixed-point set: every vector that missed the 5e-3 rad joint tolerance had
+`root/rho < 0.14`, and every vector above 0.30 agreed to 5.7e-4 or better —
+two orders inside tolerance. The gate sits at 0.20, in the gap.
+
+The testbench asserts the pose round-trip on **every** vector without
+exception, and asserts joint agreement only where both conditioning numbers
+admit it, reporting the two excluded sets separately. That is the correct
+split: a pose reached to 1e-5 m through a differently-spelled configuration is
+a correct answer, not a failure.
 
 ---
 
 ## 5. Results
+
+### 5.0 Status of these figures
+
+**Everything in §5 was measured on a different manipulator.** The arm was a
+0.71 m anthropomorphic design with `a₁ = 0.05`, no lateral shoulder offset, and
+symmetric ±joint limits. It has been replaced by the PUMA 560 of §2.1, for the
+reason given in §4.5: with no lateral offset the wrist centre can sit exactly
+on the joint-1 axis, and the solver returned an arbitrary θ₁ there rather than
+failing.
+
+What that invalidates, and what it does not:
+
+- **Invalidated: every absolute latency, and both jitter ratios.** The
+  workloads were regenerated against the new geometry, so they are not the same
+  48 poses or the same pentagon. The reference model's own iteration counts
+  moved with them — the 48-pose table's maximum fell from 32 to 12 — so the
+  disturbed-case `max/med` will be substantially smaller than the 7.95 reported
+  below, on a workload whose tail this arm's joint limits make harder to reach.
+- **Invalidated: the latency model's coefficients.** `361 ns + 16030 ns × k`
+  was fitted on the old kernel. The per-iteration cost is a property of the
+  synthesised datapath, which has not changed, so the slope should survive; the
+  intercept and the fit both need re-measuring.
+- **Expected to survive: the structural findings.** That all variance is
+  iteration count, that no loop within an iteration is data-dependent, and that
+  the tracking case is close to fixed-latency while the disturbed case is not,
+  are properties of the two solvers rather than of the arm.
+
+The analytic kernel additionally now carries a different θ₁ branch and a
+different wrist extraction (§4.5), so its resource and timing figures need
+re-synthesising, not merely re-running.
+
+### 5.1 Figures from the previous manipulator
 
 All figures below are from the PS wall-clock instrument described in §4.1, at a
 PL clock of 80 MHz. The two IK kernels do not fit simultaneously on this device
@@ -545,7 +692,10 @@ driven by `hls/Makefile`.
 ```bash
 # 0. reference model and vectors (also emits sw/src/ik_vectors.h, gitignored)
 python3 model/validate.py
+python3 model/gen_geometry.py      # robot.py -> hls/include/ik_geometry.hpp
 python3 model/gen_vectors.py
+python3 model/urdf_to_dh.py        # self-test of the URDF converter
+python3 model/plot_dh.py           # optional: regenerate Figure 1
 
 # 1. host regression — no Vitis required
 make -C hls host
@@ -576,6 +726,17 @@ Override the device with `make -C hls PART=<part>` and
 checkout updates the code that consumes them but not the files themselves.
 `sw/src/main.c` guards this with `#error` on `IK_VECTORS_VERSION`, naming the
 remedy. A stale header implies a stale workload, not merely a stale constant.
+
+`hls/include/ik_geometry.hpp` is generated by `model/gen_geometry.py` from
+`model/robot.py` and **is** checked in, so a clone builds without running
+Python. `ik_config.hpp` guards it with `#error` on `IK_GEOMETRY_VERSION`.
+Re-run the generator after any change to the robot definition — the kernels
+compile against that header, and a stale copy puts them out of step with the
+reference model.
+
+`docs/figures/*.svg` is likewise generated by `model/plot_dh.py` and checked
+in, so the README renders on a fresh clone. It has no build-time consumer and
+no staleness guard, so a DH change requires re-running the script by hand.
 
 ### 8.2 The register-map step is not optional
 

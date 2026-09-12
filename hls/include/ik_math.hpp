@@ -504,6 +504,22 @@ namespace ikm {
         return v;
     }
 
+    //! Clamp to [0, inf) ahead of a square root.
+    //!
+    //! The analytic solver's theta1 discriminant, rho^2 - d3^2, is negative
+    //! exactly when the target lies inside the singular cylinder about the
+    //! joint-1 axis.  That case is already reported as IK_ERR_UNREACH, but the
+    //! kernel has no early exit - its latency being a compile-time constant is
+    //! the property under test - so the arithmetic runs to completion either
+    //! way and sqrt() must still be handed something valid.
+    //!
+    //! @param v Input value
+    //! @return  Value clamped to [0, inf)
+    inline ik_real_t clamp_lo0(ik_real_t v) {
+#pragma HLS INLINE
+        return v < (ik_real_t)0 ? (ik_real_t)0 : v;
+    }
+
 }  // namespace ikm
 
 #endif  //! IK_MATH_HPP
