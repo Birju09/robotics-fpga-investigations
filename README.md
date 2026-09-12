@@ -200,6 +200,41 @@ contains the `mat_mul`/`mat_inv` section and runs it whenever those IPs are in
 the bitstream; with the default kernel set they are not, and it says so in the
 report rather than silently omitting the rows.
 
+### Two workloads: stressed poses and a trajectory
+
+Every kernel is run over two tables from `sw/src/ik_vectors.h`, reported
+separately.
+
+`ik_pose_tbl` — 48 independent targets (well-conditioned, wrist-singular,
+elbow-extended, plus a tail selected on the model's DLS iteration count), each
+DLS solve seeded from its own perturbation of the answer. This is the
+**disturbed** case, and its `max/med` is the number a worst-case schedule has
+to survive.
+
+`ik_traj_*` — 50 samples around a closed **pentagon path** in the plane
+z = 0.10 m, ten per edge, tool pointing down, tool yaw stepping 0° → 90° → 0° →
+90° → 0° at the five vertices and interpolated linearly along the edges so the
+orientation never turns discontinuously. About 12 mm and 9° of yaw per sample.
+DLS is warm-started from *its own previous output*, chained all the way round
+the lap — which is the only thing a servo loop can do, and the reason the table
+exists: the random set is a stress workload, and no machine drives an arm that
+way.
+
+The tracking table is nearly flat — every sample converges in two iterations,
+vertices included, `max/med ≈ 1.0` against 7.7 on the random table in the host
+run. That is the result rather than a weak workload: while it is *following a
+path* DLS behaves like a fixed-latency block, and its unbounded iteration count
+only becomes a scheduling problem when the loop is disturbed or reseeded.
+Reporting only the random table would overstate what tracking costs; reporting
+only the trajectory would hide what a disturbance costs. The gap between the
+two is what an iterative solver charges that a closed-form one does not.
+
+The harness also prints the trajectory's cumulative **chain drift** against the
+model's own chained solution. Because the seed is the kernel's output rather
+than a table lookup, quantisation error integrates around the lap instead of
+being resynchronised every sample — a ramp there is fixed-point error
+accumulating, a step is the chain changing branch.
+
 It is deliberately *not* the same number Vitis HLS reports. The HLS latency is
 PL cycles between `ap_start` and `ap_done`; it excludes roughly 20 single-beat
 AXI4-Lite accesses per solve. For kernels this small that gap is not a rounding

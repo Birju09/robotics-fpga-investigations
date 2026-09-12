@@ -4,9 +4,10 @@ Running log of what is built, what has been measured on hardware, and what is
 open. `README.md` is the stable description of the project; this file is the
 part that changes every build.
 
-Last updated after adding the DLS trust region. The hardware numbers below are
-still from the pre-trust-region bitstream (`run.log`); the new solver has
-passed the host regression but has not been synthesised or run on the board.
+Last updated after adding the pentagon trajectory workload (`ik_vectors.h`
+version 4). The hardware numbers below are still from the pre-trust-region
+bitstream (`run.log`): neither the trust region nor the trajectory table has
+been synthesised or run on the board, though both pass the host regression.
 
 ---
 
@@ -374,6 +375,19 @@ meaningful. Steps 3–5 are uniform scalings and can be verified from
   ~15,950 ns; if it does not, something in the iteration has become
   data-dependent. The trust region was written to keep it flat — the shift
   count is always computed and always applied, never conditionally skipped.
+- **The pentagon trajectory workload has not been on hardware.** `ik_vectors.h`
+  version 4 adds `ik_traj_*`: 50 samples around a closed pentagon, tool yaw
+  0-90-0-90-0 at the vertices interpolated along the edges, DLS chained from
+  its own previous output. In the host build it is flat — 2 iterations every
+  sample, `max/med` 1.02 against 7.74 for the random table in the same run —
+  which is the tracking-vs-disturbed contrast the section was added to make.
+  Two things need the board before that is a result: the fixed-point kernel's
+  iteration counts (quantisation could add one at some samples), and the
+  **chain drift** figure the harness prints. Drift is 7 µrad over a lap in the
+  float build, but there the chain and the model are the same arithmetic; in
+  Q16.16, fed its own output for 50 solves with no resynchronisation, it is
+  a genuinely open number and the one that says whether a warm-started
+  fixed-point solver is stable in a loop or slowly walks off the path.
 - The matrix IPs have never been measured on hardware. They are packaged and
   the harness section for them exists; they have simply never been in a
   bitstream with a kernel worth measuring alongside.

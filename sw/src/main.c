@@ -16,6 +16,23 @@
 //! is itself a finding: for a kernel this small, moving data can cost more than
 //! computing.  Compare against `make -C hls reports`.
 //
+//! Two workloads
+//! -------------
+//! Every kernel is run over both tables in ik_vectors.h, and the two are
+//! reported separately because they answer different questions.
+//
+//!   ik_pose_tbl   48 independent targets, each with its own cold-ish seed.
+//!                 The disturbed case.  Its max/med is the number a
+//!                 worst-case schedule has to survive.
+//!   ik_traj_*     50 samples around a pentagon path with the tool
+//!                 orientation interpolated between vertices, DLS
+//!                 warm-started from its own previous output.  The tracking
+//!                 case - what a servo loop actually asks for.
+//
+//! Reporting only the first would overstate what tracking costs; reporting
+//! only the second would hide what a disturbance costs.  The gap between
+//! them is what an iterative solver charges that a closed-form one does not.
+//
 //! Scope
 //! -----
 //! This harness tests whichever kernels the bitstream actually contains.  Each
@@ -118,9 +135,9 @@ static void init_platform_stub(void);
 //! ik_vectors.h would produce a clean-looking run whose max/med is wrong by
 //! about 4x.
 //
-#if !defined(IK_VECTORS_VERSION) || IK_VECTORS_VERSION < 3
+#if !defined(IK_VECTORS_VERSION) || IK_VECTORS_VERSION < 4
 #error \
-    "sw/src/ik_vectors.h is out of date - this harness needs version 3 (ik_qdls_tbl and ik_model_iters_tbl from the trust-region solver). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
+    "sw/src/ik_vectors.h is out of date - this harness needs version 4 (the ik_traj_* pentagon trajectory tables). It is a generated file and is deliberately gitignored, so git will not update it for you. Run: python3 model/gen_vectors.py"
 #endif
 
 //! DLS solver arguments.  These mirror IK_DLS_*_DEFAULT in
@@ -163,8 +180,11 @@ static void init_platform_stub(void);
 //! ------------------------------------------------------------------
 //! Statistics
 //! ------------------------------------------------------------------
+//! One buffer type serves both workloads, sized to whichever table is longer.
+#define IK_SAMP_CAP ((IK_NVEC) > (IK_NTRAJ) ? (IK_NVEC) : (IK_NTRAJ))
+
 typedef struct {
-    uint32_t v[IK_NVEC];
+    uint32_t v[IK_SAMP_CAP];
     int n;
 } samples_t;
 
@@ -173,7 +193,7 @@ static void samp_reset(samples_t* s) {
 }
 
 static void samp_add(samples_t* s, uint32_t x) {
-    if (s->n < IK_NVEC)
+    if (s->n < IK_SAMP_CAP)
         s->v[s->n++] = x;
 }
 
@@ -290,9 +310,10 @@ static int verify_regmap(ik_dev_t* dev, uintptr_t in_base, uintptr_t out_base,
 }
 
 //! ------------------------------------------------------------------
-//! iters < 0 suppresses the iteration column, which only DLS has.
-static void print_pose_result(int i, const char* tag, int st, const float* q,
-                              const float* qg, int iters) {
+//! Largest per-joint disagreement, radians, each difference wrapped to
+//! (-pi, pi] first: joint angles are angles, and an unwrapped subtraction
+//! reports 2*pi of error for two spellings of the same configuration.
+static float joint_delta(const float* q, const float* qg) {
     float worst = 0.0f;
     for (int j = 0; j < IK_DOF; j++) {
         float d = q[j] - qg[j];
@@ -305,6 +326,13 @@ static void print_pose_result(int i, const char* tag, int st, const float* q,
         if (d > worst)
             worst = d;
     }
+    return worst;
+}
+
+//! iters < 0 suppresses the iteration column, which only DLS has.
+static void print_pose_result(int i, const char* tag, int st, const float* q,
+                              const float* qg, int iters) {
+    float worst = joint_delta(q, qg);
     if (iters >= 0)
         xil_printf(
             "    [%2d] %-16s status=%d  worst joint delta = %d urad"
@@ -322,10 +350,12 @@ int main(void) {
 #if HAVE_ANALYTIC
     ik_dev_t analytic = {ANALYTIC_BASE};
     samples_t s_an_hw, s_an_sw;
+    samples_t s_tr_an, s_tr_an_sw;
 #endif
 #if HAVE_DLS
     ik_dev_t dls = {DLS_BASE};
     samples_t s_dls_hw, s_dls_sw, s_dls_it, s_dls_sw_it, s_dls_per;
+    samples_t s_tr_dls, s_tr_dls_sw, s_tr_it, s_tr_sw_it, s_tr_per;
 #endif
     ik_dev_t matmul = {MATMUL_BASE};
     ik_dev_t matinv = {MATINV_BASE};
@@ -342,7 +372,8 @@ int main(void) {
         "=================================================================="
         "\r\n");
     xil_printf(" global timer      : %u Hz\r\n", (unsigned)ik_timer_hz());
-    xil_printf(" poses             : %d\r\n", IK_NVEC);
+    xil_printf(" poses             : %d random + %d trajectory\r\n", IK_NVEC,
+               IK_NTRAJ);
     //! Which kernels this bitstream actually has.  Printed rather than assumed
     //! because the two IK kernels do not fit together on this part, so every
     //! log has to say which one produced it.
@@ -445,7 +476,10 @@ int main(void) {
     //
     //! Seeded from ik_seed_tbl rather than from the previous solution: a warm
     //! start would make each pose's iteration count depend on the order the
-    //! table happens to be in, and the spread is the measurement.
+    //! table happens to be in, and the spread is the measurement.  The
+    //! trajectory section below deliberately does the opposite - there the
+    //! order is the workload.  Both policies are correct for their own table
+    //! and neither is correct for the other's.
     samp_reset(&s_dls_hw);
     samp_reset(&s_dls_sw);
     samp_reset(&s_dls_it);
@@ -482,6 +516,129 @@ int main(void) {
         //! crosses tol.  Without this the two latency rows look like a clean
         //! PL-vs-PS comparison when they may be solving to different depths.
         samp_add(&s_dls_sw_it, (uint32_t)it_sw);
+    }
+#endif
+
+    //
+    //! ---- pentagon trajectory: the tracking workload ----
+    //
+    //! Everything above drives independent targets.  This section drives a
+    //! path: 50 samples around a pentagon, ~12 mm and up to 9 degrees of tool
+    //! yaw apart, which is what a servo loop actually asks an IK solver for.
+    //
+    //! The DLS seed is CHAINED - each solve starts from the previous solve's
+    //! output, exactly the opposite of the policy in the section above, and
+    //! for the opposite reason.  There the order-independence was the point;
+    //! here the order IS the workload, and a warm start is not an
+    //! optimisation a real controller might skip, it is the only thing it can
+    //! do.  Expect the iteration spread to collapse against the random table:
+    //! that collapse is the finding, and it is what says DLS behaves like a
+    //! fixed-latency block while tracking and only becomes a scheduling risk
+    //! when the loop is disturbed or reseeded.
+    //
+    //! The chain is fed the KERNEL's own output, not ik_traj_seed_tbl's, so
+    //! fixed-point error accumulates around the lap the way it would in
+    //! service.  Reading the seed from the table each sample would resync the
+    //! chain to the double model every step and hide exactly that.
+    //! ik_traj_seed_tbl[0] therefore only starts it.
+    xil_printf("-- trajectory, at the %d vertices --\r\n", IK_TRAJ_EDGES);
+#if HAVE_ANALYTIC
+    samp_reset(&s_tr_an);
+    samp_reset(&s_tr_an_sw);
+    float tr_an_worst = 0.0f;
+    for (int i = 0; i < IK_NTRAJ; i++) {
+        float pose[6], qg[6], q[6];
+        uint32_t c;
+        for (int j = 0; j < 6; j++) {
+            pose[j] = ik_q2f(ik_traj_pose_tbl[i][j]);
+            qg[j] = ik_q2f(ik_traj_qgold_tbl[i][j]);
+        }
+
+        int st = ik_analytic_solve(&analytic, pose, ik_traj_cfg_tbl[i], q, &c);
+        samp_add(&s_tr_an, c);
+        float d = joint_delta(q, qg);
+        if (d > tr_an_worst)
+            tr_an_worst = d;
+        //! Only the vertices, or this prints 50 near-identical lines.  They
+        //! are where the tool orientation has reached its commanded 0 or 90
+        //! degrees, so they are the samples worth reading individually.
+        if (ik_traj_vtx_tbl[i])
+            xil_printf(
+                "    [%2d] analytic  vertex %d  status=%d  "
+                "worst joint delta = %d urad\r\n",
+                i, (int)ik_traj_edge_tbl[i], st, (int)(d * 1e6f));
+
+        uint64_t t0 = ik_timer_read();
+        ik_analytic_solve_sw(pose, ik_traj_cfg_tbl[i], q);
+        uint64_t t1 = ik_timer_read();
+        samp_add(&s_tr_an_sw, (uint32_t)(t1 - t0));
+    }
+#endif
+
+#if HAVE_DLS
+    samp_reset(&s_tr_dls);
+    samp_reset(&s_tr_dls_sw);
+    samp_reset(&s_tr_it);
+    samp_reset(&s_tr_sw_it);
+    samp_reset(&s_tr_per);
+    float tr_dls_worst = 0.0f;
+    int tr_dls_worst_i = -1;
+    int tr_dls_bad = 0;
+    float seed[6], seed_sw[6];
+    for (int j = 0; j < 6; j++)
+        seed[j] = seed_sw[j] = ik_q2f(ik_traj_seed_tbl[0][j]);
+
+    for (int i = 0; i < IK_NTRAJ; i++) {
+        float pose[6], qd[6], q[6];
+        uint32_t c;
+        int it = 0;
+        for (int j = 0; j < 6; j++) {
+            pose[j] = ik_q2f(ik_traj_pose_tbl[i][j]);
+            qd[j] = ik_q2f(ik_traj_qdls_tbl[i][j]);
+        }
+
+        int st = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
+                              DLS_MAX_ITER, DLS_STEP_MAX, q, &it, NULL, &c);
+        samp_add(&s_tr_dls, c);
+        samp_add(&s_tr_it, (uint32_t)it);
+        if (it > 0)
+            samp_add(&s_tr_per, c / (uint32_t)it);
+        if (st != IK_OK)
+            tr_dls_bad++;
+        //! Drift of the hardware chain from the model's chain, accumulated
+        //! rather than reset per sample.  A slow growth here is quantisation
+        //! integrating around the lap; a step is a branch change.
+        float d = joint_delta(q, qd);
+        if (d > tr_dls_worst) {
+            tr_dls_worst = d;
+            tr_dls_worst_i = i;
+        }
+        if (ik_traj_vtx_tbl[i]) {
+            xil_printf(
+                "    [%2d] dls       vertex %d  status=%d  "
+                "chain drift = %d urad  iters=%d",
+                i, (int)ik_traj_edge_tbl[i], st, (int)(d * 1e6f), it);
+            //! Same convention as the random table: the model's count is
+            //! reported when it differs, never asserted on.  A difference is
+            //! quantisation moving the convergence path, which is a result.
+            if (it != (int)ik_traj_iters_tbl[i])
+                xil_printf("  (model needed %d)", (int)ik_traj_iters_tbl[i]);
+            xil_printf("\r\n");
+        }
+        for (int j = 0; j < 6; j++)
+            seed[j] = q[j];
+
+        int it_sw = 0;
+        float q_sw[6];
+        uint64_t t0 = ik_timer_read();
+        ik_dls_solve_sw(pose, seed_sw, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
+                        DLS_STEP_MAX, q_sw, &it_sw, NULL);
+        uint64_t t1 = ik_timer_read();
+        samp_add(&s_tr_dls_sw, (uint32_t)(t1 - t0));
+        samp_add(&s_tr_sw_it, (uint32_t)it_sw);
+        //! The PS chain carries its own seed for the same reason.
+        for (int j = 0; j < 6; j++)
+            seed_sw[j] = q_sw[j];
     }
 #endif
 
@@ -525,6 +682,37 @@ int main(void) {
 #else
     xil_printf("  ik_dls               not in this bitstream (skipped)\r\n");
 #endif
+
+    //! ---- the same numbers for the trajectory workload ----
+    xil_printf("\r\n");
+    xil_printf(
+        "-- pentagon trajectory (%d samples, %d per edge, DLS warm-started "
+        "from\r\n   the previous sample) --\r\n",
+        IK_NTRAJ, IK_TRAJ_STEPS);
+#if HAVE_ANALYTIC
+    samp_report("traj analytic (PL)", &s_tr_an);
+    samp_report("traj analytic (PS, double)", &s_tr_an_sw);
+    xil_printf("  %-26s worst joint delta vs model = %d urad\r\n", "",
+               (int)(tr_an_worst * 1e6f));
+#endif
+#if HAVE_DLS
+    samp_report("traj dls      (PL)", &s_tr_dls);
+    samp_report("traj dls      (PS, double)", &s_tr_dls_sw);
+    samp_report_raw("traj dls iters (PL)", &s_tr_it);
+    samp_report_raw("traj dls iters (PS, double)", &s_tr_sw_it);
+    samp_report("traj dls per iter (PL)", &s_tr_per);
+    //! Chain health.  The seed is the kernel's own previous output all the way
+    //! round the lap, so this is cumulative drift from the double model, not a
+    //! per-sample residual - report where it peaked, since a step means the
+    //! chain changed branch and a ramp means quantisation is integrating.
+    xil_printf("  %-26s worst chain drift vs model = %d urad at sample %d\r\n",
+               "", (int)(tr_dls_worst * 1e6f), tr_dls_worst_i);
+    if (tr_dls_bad)
+        xil_printf("  %-26s %d sample(s) returned a non-OK status\r\n", "",
+                   tr_dls_bad);
+#endif
+    xil_printf("\r\n");
+
     if (MATMUL_BASE && MATINV_BASE) {
         samp_report("mat_mul 6x6x6 (PL)", &s_mm);
         samp_report("mat_inv 6x6   (PL)", &s_mi);
@@ -554,6 +742,24 @@ int main(void) {
     xil_printf(
         "A larger part does not bound it - it only makes each iteration\r\n");
     xil_printf("cheaper.  Compare against the histogram tb_ik_dls prints.\r\n");
+    xil_printf("\r\n");
+    xil_printf(
+        "Read the two DLS blocks against each other rather than picking\r\n");
+    xil_printf(
+        "one.  The random table is the disturbed case - independent\r\n");
+    xil_printf(
+        "targets, cold seeds - and its max/med is the number a worst-case\r\n");
+    xil_printf(
+        "schedule has to survive.  The trajectory is the tracking case,\r\n");
+    xil_printf(
+        "warm-started from its own previous output, and its spread should\r\n");
+    xil_printf(
+        "be far tighter: while it is following a path DLS behaves close to\r\n");
+    xil_printf(
+        "a fixed-latency block.  The gap between the two blocks is the\r\n");
+    xil_printf(
+        "cost of every disturbance, and it is what an iterative solver\r\n");
+    xil_printf("charges you that the analytic one does not.\r\n");
 #endif
     xil_printf(
         "=================================================================="

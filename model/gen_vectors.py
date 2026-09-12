@@ -28,6 +28,18 @@ LAMBDA = 0.02
 TOL = 1e-3
 MAX_ITER = 64
 
+# ---------------------------------------------------------------------------
+# Pentagon trajectory (see _pentagon_traj)
+# ---------------------------------------------------------------------------
+TRAJ_CENTRE = (0.35, 0.0)     # metres, in the base x-y plane
+TRAJ_Z = 0.10                 # tool-tip height above the base plane
+TRAJ_RADIUS = 0.10            # circumradius of the pentagon
+TRAJ_STEPS = 10               # samples per edge -> 5 * 10 = 50 poses
+# End-effector orientation at each vertex, degrees of yaw about the (vertical)
+# tool axis.  Interpolated linearly along each edge, so the tool reaches the
+# vertex already at that vertex's orientation and never turns discontinuously.
+TRAJ_YAW_DEG = (0.0, 90.0, 0.0, 90.0, 0.0)
+
 
 def fx(x):
     """float -> signed decimal Q16.16 (as the C++ tb will parse it)."""
@@ -199,10 +211,14 @@ def gen_c_header(n=48, path=None):
     for _iters, q, T, seed in _find_dls_tail(n - len(recs)):
         recs.append(_mk_rec(q, T, "dls-tail", seed=seed))
 
-    def c_rows(key):
+    # The trajectory table.  Deterministic - it takes nothing from `rng`, so
+    # adding it left every value in the random table above bit-identical.
+    traj = _pentagon_traj()
+
+    def c_rows(key, rows=None):
         return "\n".join(
             "    { %s }," % ", ".join("%11d" % fx(v) for v in r[key])
-            for r in recs)
+            for r in (recs if rows is None else rows))
 
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w") as f:
@@ -227,6 +243,12 @@ def gen_c_header(n=48, path=None):
  * iterations every time.  Measured on hardware that gave max/med = 1.77,
  * against 25 iterations in the 256-pose host sweep.  The tail that decides
  * whether an iterative solver can be scheduled at all was not being sampled.
+ *
+ * ik_traj_* is a SECOND, separate workload - a pentagon path, described at
+ * its own tables below.  The pose table above is a stress workload of
+ * independent targets, which is not what a robot does; the trajectory table
+ * is the tracking regime, and the two answer different questions.  Neither
+ * replaces the other and the harness runs both.
  */
 #ifndef IK_VECTORS_H
 #define IK_VECTORS_H
@@ -244,8 +266,10 @@ def gen_c_header(n=48, path=None):
  *      CLAMPED solver, matching the kernel.  The tail POSES are unchanged -
  *      their selection is deliberately frozen on the unclamped solver so the
  *      workload stays fixed across solver changes.
+ *   4  ik_traj_* - the pentagon trajectory workload.  Additive; every value
+ *      in the tables above is unchanged.
  */
-#define IK_VECTORS_VERSION 3
+#define IK_VECTORS_VERSION 4
 
 #define IK_NVEC %d
 
@@ -293,6 +317,85 @@ static const uint8_t ik_model_iters_tbl[IK_NVEC] = {
 %s
 };
 
+/* ======================================================================
+ * Pentagon trajectory - the TRACKING workload.
+ *
+ * %d samples: a closed pentagon of circumradius %.2f m centred at
+ * (%.2f, %.2f) in the base x-y plane, traversed at z = %.2f m with the tool
+ * approach axis pointing straight down, %d samples per edge.  Tool yaw is
+ * %s deg at the five vertices and is interpolated
+ * linearly along each edge, so the orientation reaches each vertex smoothly
+ * rather than switching there.  Per sample that is ~%.0f mm of translation
+ * and up to %.0f deg of yaw - servo-scale increments.
+ *
+ * Why this exists next to ik_pose_tbl: that table is independent targets,
+ * each seeded from its own perturbation, and no machine drives an arm that
+ * way.  A robot follows a path, and the iterative solver is seeded from the
+ * solution it produced one control period ago.  Whether DLS is schedulable
+ * in a servo loop is a question about THAT regime, and it has to be measured
+ * rather than inferred from the random one.
+ *
+ * ik_traj_seed_tbl is chained: sample i is seeded from sample i-1's DLS
+ * solution, and sample 0 from the last sample's, because the path is a closed
+ * loop.  These are the second lap, so sample 0's seed is a real predecessor
+ * rather than a cold start showing up as a lone outlier.
+ *
+ * The harness re-chains this on hardware (it feeds the KERNEL's previous
+ * output forward, not this table's) - so a divergence between the fixed-point
+ * and double chains shows up as drift against ik_traj_qdls_tbl rather than
+ * being masked by resynchronising the seed every sample.  Compare per-sample
+ * and expect the iteration counts to be nearly flat; see IK_VECTORS_VERSION 4
+ * and main.c's trajectory section.
+ * ====================================================================== */
+#define IK_NTRAJ %d
+#define IK_TRAJ_EDGES 5
+#define IK_TRAJ_STEPS %d
+
+/* { x, y, z, roll, pitch, yaw } along the path. */
+static const int32_t ik_traj_pose_tbl[IK_NTRAJ][6] = {
+%s
+};
+
+/* Chained seed: the previous sample's DLS solution, as a tracking loop
+ * supplies.  NOT a perturbation of the answer like ik_seed_tbl. */
+static const int32_t ik_traj_seed_tbl[IK_NTRAJ][6] = {
+%s
+};
+
+/* Analytic (+,+,+) solution per sample.  Continuous along the whole path -
+ * the branch does not flip anywhere on it, which is what makes the analytic
+ * solver usable for trajectory following without post-hoc unwrapping. */
+static const int32_t ik_traj_qgold_tbl[IK_NTRAJ][6] = {
+%s
+};
+
+/* The model's DLS solution from the chained seed.  Compare ik_dls_kernel
+ * against this, never against ik_traj_qgold_tbl - same multi-valuedness
+ * caveat as ik_qdls_tbl above. */
+static const int32_t ik_traj_qdls_tbl[IK_NTRAJ][6] = {
+%s
+};
+
+/* Analytic branch selector (IK_CFG_* bits), constant along the path. */
+static const uint8_t ik_traj_cfg_tbl[IK_NTRAJ] = {
+%s
+};
+
+/* Which pentagon edge each sample lies on, 0..4. */
+static const uint8_t ik_traj_edge_tbl[IK_NTRAJ] = {
+%s
+};
+
+/* 1 at the five vertex samples, 0 along the edges. */
+static const uint8_t ik_traj_vtx_tbl[IK_NTRAJ] = {
+%s
+};
+
+/* Iterations the double-precision model needed per sample, chained. */
+static const uint8_t ik_traj_iters_tbl[IK_NTRAJ] = {
+%s
+};
+
 #endif /* IK_VECTORS_H */
 """ % (len(recs),
             c_rows("pose"),
@@ -301,9 +404,121 @@ static const uint8_t ik_model_iters_tbl[IK_NVEC] = {
             c_rows("qdls"),
             "    " + ", ".join("%d" % r["cfg"] for r in recs),
             "\n".join('    "%s",' % r["tag"] for r in recs),
-            "    " + ", ".join("%d" % r["iters"] for r in recs)))
+            "    " + ", ".join("%d" % r["iters"] for r in recs),
+            # ---- trajectory block ----
+            len(traj), TRAJ_RADIUS, TRAJ_CENTRE[0], TRAJ_CENTRE[1], TRAJ_Z,
+            TRAJ_STEPS,
+            " - ".join("%g" % y for y in TRAJ_YAW_DEG),
+            1000.0 * 2.0 * TRAJ_RADIUS * np.sin(np.pi / 5) / TRAJ_STEPS,
+            max(abs(TRAJ_YAW_DEG[(k + 1) % 5] - TRAJ_YAW_DEG[k])
+                for k in range(5)) / TRAJ_STEPS,
+            len(traj), TRAJ_STEPS,
+            c_rows("pose", traj),
+            c_rows("seed", traj),
+            c_rows("qgold", traj),
+            c_rows("qdls", traj),
+            "    " + ", ".join("%d" % r["cfg"] for r in traj),
+            "    " + ", ".join("%d" % r["edge"] for r in traj),
+            "    " + ", ".join("%d" % r["vtx"] for r in traj),
+            "    " + ", ".join("%d" % r["iters"] for r in traj)))
 
-    print(f"  {'ik_vectors.h':20s} {len(recs):5d} poses   -> {os.path.relpath(path)}")
+    print(f"  {'ik_vectors.h':20s} {len(recs):5d} poses + "
+          f"{len(traj)} trajectory samples -> {os.path.relpath(path)}")
+
+
+def _pentagon_traj():
+    """
+    A closed pentagon path, sampled as a trajectory, with the tool orientation
+    switching at the vertices.
+
+    This is the table a robotics application would actually generate.  The
+    random pose set above is a *stress* workload - independent targets, each
+    seeded from its own perturbation - and nothing in a real machine looks
+    like that.  A real arm follows a path: consecutive targets are millimetres
+    apart, and the iterative solver is seeded from the solution it produced
+    one control period ago.  Whether DLS can be scheduled in a servo loop
+    depends on that regime, not on the random one, so it has to be measured
+    separately rather than inferred.
+
+    Geometry: the tool tip traverses the five edges in the horizontal plane
+    z = TRAJ_Z with the approach axis pointing straight down, which puts the
+    pose orientation at (roll, pitch, yaw) = (pi, 0, psi) - a non-degenerate
+    RPY triple for every psi, unlike a vertical work plane, which lands on
+    pitch = +-pi/2 where the roll/yaw split stops being defined and the
+    quantised pose no longer round-trips through T_to_pose().
+
+    psi is TRAJ_YAW_DEG at each vertex - 0, 90, 0, 90, 0 degrees - and is
+    interpolated linearly along the edge between them, so the tool arrives at
+    each vertex already carrying that vertex's orientation and never turns
+    discontinuously.  At TRAJ_STEPS = 10 that is 9 degrees of yaw and about
+    12 mm of translation per sample, both of them servo-scale increments.
+
+    Expect this table to be almost flat: every pose converges in two
+    iterations, vertices included, because a smooth path warm-started from its
+    own predecessor never presents the solver with a large residual.  That is
+    the result, not a defect in the workload - it says the DLS solver behaves
+    as a fixed-latency block while it is TRACKING, and that its unbounded
+    iteration count only becomes a scheduling problem when the loop is
+    disturbed or reseeded, which is what the random table measures.  The two
+    tables are answering different questions and both are reported.
+
+    Seeding is chained - each pose is seeded from the previous pose's DLS
+    solution, and the first from the last, because the path is a closed loop.
+    The tables are the SECOND lap, so the first pose's seed is a genuine
+    predecessor solution rather than a cold start that would show up as a
+    one-sample outlier in a 50-sample summary.
+    """
+    cx, cy = TRAJ_CENTRE
+    # Vertex 0 at the top (+y) so the path is symmetric about the x axis and
+    # the whole pentagon stays in front of the shoulder.
+    vtx = [(cx + TRAJ_RADIUS * np.cos(np.pi / 2 + 2 * np.pi * k / 5),
+            cy + TRAJ_RADIUS * np.sin(np.pi / 2 + 2 * np.pi * k / 5))
+           for k in range(5)]
+
+    poses, edges, is_vtx = [], [], []
+    for k in range(5):
+        x0, y0 = vtx[k]
+        x1, y1 = vtx[(k + 1) % 5]
+        yaw0 = np.deg2rad(TRAJ_YAW_DEG[k])
+        yaw1 = np.deg2rad(TRAJ_YAW_DEG[(k + 1) % 5])
+        for j in range(TRAJ_STEPS):
+            t = j / TRAJ_STEPS
+            poses.append(q_arr([x0 + t * (x1 - x0), y0 + t * (y1 - y0),
+                                TRAJ_Z, np.pi, 0.0,
+                                yaw0 + t * (yaw1 - yaw0)]))
+            edges.append(k)
+            is_vtx.append(1 if j == 0 else 0)
+
+    Ts = [_pose_to_T(p) for p in poses]
+    qgold = []
+    for i, T in enumerate(Ts):
+        qs, ok = M.ik_analytic(T, +1, +1, +1)
+        if not ok:
+            raise RuntimeError(
+                f"pentagon sample {i} at {poses[i][:3]} is out of reach - "
+                "adjust TRAJ_CENTRE/TRAJ_RADIUS/TRAJ_Z")
+        qgold.append(qs)
+
+    # Two laps: lap 0 warms the chain up, lap 1 is what gets emitted.
+    q = qgold[0]
+    for _lap in range(2):
+        seeds, qdls, iters = [], [], []
+        for i, T in enumerate(Ts):
+            seeds.append(q)
+            qd, it, _, conv = M.ik_dls(T, q, lam=LAMBDA, max_iter=MAX_ITER,
+                                       tol=TOL)
+            if not conv:
+                raise RuntimeError(
+                    f"pentagon sample {i} did not converge in {MAX_ITER} "
+                    "iterations from its predecessor's solution")
+            qdls.append(q_arr(qd))
+            iters.append(int(it))
+            q = qd
+
+    return [{"pose": poses[i], "seed": q_arr(seeds[i]), "qgold": qgold[i],
+             "qdls": qdls[i], "iters": iters[i], "cfg": 1 | 2 | 4,
+             "edge": edges[i], "vtx": is_vtx[i]}
+            for i in range(len(poses))]
 
 
 def _pose_to_T(pose):
