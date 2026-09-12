@@ -58,6 +58,45 @@
 #define IK_DLS_TOL_DEFAULT 0.001
 #define IK_DLS_MAX_ITER 64
 
+//
+//! ---------------- DLS task dimension ----------------
+//
+//! Number of task rows iks::dls() solves against. Runtime register like
+//! lambda, tol and step_max, and for the same reason: it changes the
+//! distribution being measured, so it must be sweepable without
+//! re-synthesis.
+//
+//! Why it exists.  A 6R arm at a full 6-DOF pose task has J square, so
+//! J^+ J = I and there is NO nullspace - no joint motion improves clearance
+//! while holding the pose.  Dropping task rows the application does not care
+//! about makes the arm redundant WITH RESPECT TO THAT TASK, and the
+//! nullspace dimension is exactly 6 - task_dim.  That nullspace is where the
+//! collision-avoidance term goes; see docs/collision_aware_ik.md.
+//
+//!   IK_TASK_FULL (6)  full pose.  Nullspace dimension 0.  The default, and
+//!                     bit-identical to the solver before task relaxation
+//!                     existed - which is what keeps every measurement in
+//!                     README section 5 reproducible.
+//!   IK_TASK_POS  (3)  position only, orientation free.  Nullspace
+//!                     dimension 3.  Reaching, pointing, pick approach.
+//
+//! A 5-row mode (position + tool approach axis, tool spin free - welding,
+//! gluing, dispensing) is the practically interesting one and is NOT yet
+//! implemented: the free axis is the tool's z6, not a base axis, so both the
+//! orientation error and the angular Jacobian rows need rotating into the
+//! tool frame by Rc^T before the spin component can be dropped.  That is one
+//! more MULT stage.  Until then iks::dls() rejects task_dim = 5 with
+//! IK_ERR_BADDIM rather than silently rounding it to something else.
+//
+//! Costs nothing in the solve.  spd::factor() pads to 6x6 with identity and
+//! mm::multiply() already takes runtime dimensions, so a 3-row task factors
+//! and multiplies in exactly the same number of cycles as a 6-row one. The
+//! trip count of every loop here stays fixed; only muxes change.
+//
+#define IK_TASK_FULL 6
+#define IK_TASK_POS 3
+#define IK_TASK_DIM_DEFAULT IK_TASK_FULL
+
 //! ---------------- DLS trust region ----------------
 //
 //! Bound on |dq|_inf per iteration, radians. Runtime register like lambda and

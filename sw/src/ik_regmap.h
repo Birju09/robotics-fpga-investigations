@@ -51,18 +51,21 @@
 #define XIK_ANALYTIC_KERNEL_CTRL_ADDR_Q_HIGH 0x7f
 
 //! ---- ik_dls_kernel(pose[6], q_seed[6], lambda, tol, max_iter, step_max,
-//! q[6], iters, resid, status) ----
+//! task_dim, q[6], iters, resid, status) ----
 //
 //! step_max was added after this map was first written, shifting every
 //! scalar after it - exactly the kind of edit that needs gen_regmap.py rerun.
+//! task_dim was added after step_max and did it again: iters, resid and
+//! status have all moved up one slot below.
 #define XIK_DLS_KERNEL_CTRL_ADDR_AP_CTRL 0x00
 #define XIK_DLS_KERNEL_CTRL_ADDR_LAMBDA_DATA 0x10
 #define XIK_DLS_KERNEL_CTRL_ADDR_TOL_DATA 0x18
 #define XIK_DLS_KERNEL_CTRL_ADDR_MAX_ITER_DATA 0x20
 #define XIK_DLS_KERNEL_CTRL_ADDR_STEP_MAX_DATA 0x28
-#define XIK_DLS_KERNEL_CTRL_ADDR_ITERS_DATA 0x30
-#define XIK_DLS_KERNEL_CTRL_ADDR_RESID_DATA 0x38
-#define XIK_DLS_KERNEL_CTRL_ADDR_STATUS_DATA 0x40
+#define XIK_DLS_KERNEL_CTRL_ADDR_TASK_DIM_DATA 0x30
+#define XIK_DLS_KERNEL_CTRL_ADDR_ITERS_DATA 0x38
+#define XIK_DLS_KERNEL_CTRL_ADDR_RESID_DATA 0x40
+#define XIK_DLS_KERNEL_CTRL_ADDR_STATUS_DATA 0x48
 #define XIK_DLS_KERNEL_CTRL_ADDR_POSE_BASE 0x80
 #define XIK_DLS_KERNEL_CTRL_ADDR_POSE_HIGH 0x9f
 #define XIK_DLS_KERNEL_CTRL_ADDR_Q_SEED_BASE 0xa0

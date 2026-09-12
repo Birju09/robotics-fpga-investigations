@@ -153,6 +153,12 @@ static void init_platform_stub(void);
 //! against, and what the pre-trust-region hardware runs used.
 #define DLS_STEP_MAX 1.5f
 
+//! Full pose: six task rows, no nullspace.  Every latency figure in
+//! README section 5 was measured at this setting, so the timing harness
+//! stays on it - a reduced task is a different workload and belongs in a
+//! separately reported run, not folded into the existing tables.
+#define DLS_TASK_DIM IK_TASK_FULL
+
 #if defined(XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR)
 #define MATMUL_BASE XPAR_MAT_MUL_KERNEL_0_S_AXI_CTRL_BASEADDR
 #elif defined(XPAR_MAT_MUL_KERNEL_0_BASEADDR)
@@ -431,8 +437,8 @@ int main(void) {
             for (int j = 0; j < 6; j++)
                 seed[j] = ik_q2f(ik_seed_tbl[i][j]);
             int sd = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
-                                  DLS_MAX_ITER, DLS_STEP_MAX, q, &it, NULL,
-                                  NULL);
+                                  DLS_MAX_ITER, DLS_STEP_MAX, DLS_TASK_DIM, q,
+                                  &it, NULL, NULL);
             //! Against ik_qdls_tbl, not ik_qgold_tbl.  IK is multi-valued and
             //! the two solvers land on different branches by design - see the
             //! note on the tables in ik_vectors.h.  Checked against the
@@ -495,7 +501,7 @@ int main(void) {
         }
 
         ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
-                     DLS_STEP_MAX, q, &it, NULL, &c);
+                     DLS_STEP_MAX, DLS_TASK_DIM, q, &it, NULL, &c);
         samp_add(&s_dls_hw, c);
         samp_add(&s_dls_it, (uint32_t)it);
         //! Per-iteration cost, so the claim that the latency spread is
@@ -508,7 +514,7 @@ int main(void) {
         int it_sw = 0;
         uint64_t t0 = ik_timer_read();
         ik_dls_solve_sw(pose, seed, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
-                        DLS_STEP_MAX, q, &it_sw, NULL);
+                        DLS_STEP_MAX, DLS_TASK_DIM, q, &it_sw, NULL);
         uint64_t t1 = ik_timer_read();
         samp_add(&s_dls_sw, (uint32_t)(t1 - t0));
         //! The PS runs the same algorithm in double, so its iteration count is
@@ -598,7 +604,8 @@ int main(void) {
         }
 
         int st = ik_dls_solve(&dls, pose, seed, DLS_LAMBDA, DLS_TOL,
-                              DLS_MAX_ITER, DLS_STEP_MAX, q, &it, NULL, &c);
+                              DLS_MAX_ITER, DLS_STEP_MAX, DLS_TASK_DIM, q, &it,
+                              NULL, &c);
         samp_add(&s_tr_dls, c);
         samp_add(&s_tr_it, (uint32_t)it);
         if (it > 0)
@@ -632,7 +639,7 @@ int main(void) {
         float q_sw[6];
         uint64_t t0 = ik_timer_read();
         ik_dls_solve_sw(pose, seed_sw, DLS_LAMBDA, DLS_TOL, DLS_MAX_ITER,
-                        DLS_STEP_MAX, q_sw, &it_sw, NULL);
+                        DLS_STEP_MAX, DLS_TASK_DIM, q_sw, &it_sw, NULL);
         uint64_t t1 = ik_timer_read();
         samp_add(&s_tr_dls_sw, (uint32_t)(t1 - t0));
         samp_add(&s_tr_sw_it, (uint32_t)it_sw);

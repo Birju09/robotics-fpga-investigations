@@ -36,6 +36,13 @@ extern "C" {
 #define IK_DOF 6
 #define IK_MAT_MAX 6
 
+//! ik_dls_kernel task dimensions. Mirrors IK_TASK_* in
+//! hls/include/ik_config.hpp, which this bare-metal build deliberately does
+//! not include (it would drag in <ap_fixed.h>) - same reason IK_DOF and
+//! IK_FRAC_SCALE are repeated above. Keep in step with that file.
+#define IK_TASK_FULL 6
+#define IK_TASK_POS 3
+
 //! ---- ap_ctrl ----
 #define IK_ADDR_AP_CTRL 0x00
 #define IK_AP_START 0x1
@@ -80,9 +87,16 @@ int ik_analytic_solve(ik_dev_t* dev, const float pose[6], int cfg,
 
 //! step_max bounds |dq|_inf per DLS iteration, in radians; 0 disables the
 //! clamp.  See the trust region block in hls/include/ik_config.hpp.
+//
+//! task_dim is IK_TASK_FULL (6) or IK_TASK_POS (3); anything else comes back
+//! IK_ERR_BADDIM.  At IK_TASK_POS only position is solved for, so *resid is
+//! a position error in metres and the returned orientation is whatever the
+//! nullspace happened to leave.  See the task dimension block in
+//! hls/include/ik_config.hpp.
 int ik_dls_solve(ik_dev_t* dev, const float pose[6], const float q_seed[6],
                  float lambda, float tol, int max_iter, float step_max,
-                 float q_out[6], int* iters, float* resid, uint32_t* cycles);
+                 int task_dim, float q_out[6], int* iters, float* resid,
+                 uint32_t* cycles);
 
 int ik_matmul(ik_dev_t* dev, int m, int k, int n, int ta, int tb,
               const float* A, const float* B, float* C, uint32_t* cycles);
@@ -93,8 +107,8 @@ int ik_matinv(ik_dev_t* dev, int n, const float* A, float* Ainv,
 //! ---------------- software reference (runs on the A9, float, for PS-vs-PL comparison) ----------------
 int ik_analytic_solve_sw(const float pose[6], int cfg, float q_out[6]);
 int ik_dls_solve_sw(const float pose[6], const float q_seed[6], float lambda,
-                    float tol, int max_iter, float step_max, float q_out[6],
-                    int* iters, float* resid);
+                    float tol, int max_iter, float step_max, int task_dim,
+                    float q_out[6], int* iters, float* resid);
 
 //! ---------------- cycle counter ----------------
 void ik_timer_init(void);

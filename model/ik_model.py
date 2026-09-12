@@ -440,9 +440,36 @@ def clamp_step(dq, step_max, halvings=DLS_STEP_HALVINGS):
     return dq / float(1 << sh)
 
 
-def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step_max=DLS_STEP_MAX):
+# Task dimensions, mirroring IK_TASK_* in hls/include/ik_config.hpp.
+TASK_FULL = 6
+TASK_POS = 3
+
+
+def task_rows(task_dim):
     """
-    q <- q + clamp( J^T (J J^T + lam^2 I)^-1 e )
+    Row slice of the pose error and the Jacobian that a task uses.
+
+    TASK_FULL (6) is the full pose. TASK_POS (3) keeps the three
+    linear-velocity rows only, so orientation is unconstrained and the arm
+    becomes redundant with respect to the task - nullspace dimension 3.
+
+    iks::dls() rejects anything else with IK_ERR_BADDIM; so does this. In
+    particular a 5-row mode is planned but not built, because the free axis
+    is the tool's own z6 rather than a base axis, so both the orientation
+    error and the angular Jacobian rows need rotating by Rc^T first. See the
+    task dimension block in hls/include/ik_config.hpp.
+    """
+    if task_dim not in (TASK_FULL, TASK_POS):
+        raise ValueError(
+            f"task_dim {task_dim} is not supported (expected {TASK_POS} or "
+            f"{TASK_FULL}); iks::dls() returns IK_ERR_BADDIM for it")
+    return slice(0, task_dim)
+
+
+def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step_max=DLS_STEP_MAX,
+           task_dim=TASK_FULL):
+    """
+    q <- q + clamp( J_t^T (J_t J_t^T + lam^2 I)^-1 e_t )
 
     Returns (q, iters, err_norm, converged). `iters` is data-dependent and
     unbounded in general - the point of comparison against the fixed-latency
@@ -452,21 +479,26 @@ def ik_dls(T_des, q0, lam=0.08, max_iter=64, tol=1e-5, step_max=DLS_STEP_MAX):
     undamped-step behaviour - the baseline every ik_config.hpp measurement is
     quoted against, and what gen_vectors.py uses to keep the pose table fixed
     across solver changes.
+
+    `task_dim` selects the task rows (see `task_rows`). At TASK_POS the
+    returned err_norm is a POSITION error in metres and says nothing about
+    orientation, which is left wherever the nullspace put it.
     """
     q = np.array(q0, dtype=float)
-    I6 = np.eye(6)
+    rows = task_rows(task_dim)
+    Im = np.eye(task_dim)
     for k in range(1, max_iter + 1):
         T = fk(q)
-        e = pose_error(T_des, T)
+        e = pose_error(T_des, T)[rows]
         err = float(np.linalg.norm(e))
         if err < tol:
             return q, k, err, True
-        J = jacobian(q)
-        A = J @ J.T + (lam * lam) * I6
+        J = jacobian(q)[rows]
+        A = J @ J.T + (lam * lam) * Im
         dq = clamp_step(J.T @ np.linalg.solve(A, e), step_max)
         q = wrap_pi(q + dq)
     T = fk(q)
-    err = float(np.linalg.norm(pose_error(T_des, T)))
+    err = float(np.linalg.norm(pose_error(T_des, T)[rows]))
     return q, max_iter, err, err < tol
 
 

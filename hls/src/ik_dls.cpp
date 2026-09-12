@@ -13,17 +13,34 @@
 //
 int iks::dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
              const ik_real_t q_seed[IK_DOF], ik_real_t lambda, ik_real_t tol,
-             int max_iter, ik_real_t step_max, ik_real_t q[IK_DOF], int* iters,
-             ik_real_t* resid) {
+             int max_iter, ik_real_t step_max, int task_dim,
+             ik_real_t q[IK_DOF], int* iters, ik_real_t* resid) {
 #pragma HLS INLINE off
     //! Both products per iteration (A=JJ^T, DQ=J^T u) share the single
     //! mm::multiply() call site in MULT below - see ik_config.hpp for the
     //! DSP budget. The solve between them is spd::solve(), not an inversion.
 
+    const int td = task_dim;
+
 DLS_SEED:
     for (int i = 0; i < IK_DOF; i++) {
 #pragma HLS UNROLL
         q[i] = q_seed[i];
+    }
+
+    //! Rejected, not clamped: a task_dim the solver cannot honour must fail
+    //! loudly rather than silently solve a different problem than the caller
+    //! asked for. task_dim = 5 is deliberately in this set until the
+    //! tool-frame rotation exists - see ik_config.hpp.
+    //
+    //! After DLS_SEED, not before, so a rejected call returns q = q_seed
+    //! rather than whatever was in the caller's buffer. Unlike the
+    //! data-dependent exits below, this one is decided by an argument rather
+    //! than by the data, so it costs the measurement nothing.
+    if (td != IK_TASK_FULL && td != IK_TASK_POS) {
+        *iters = 0;
+        *resid = (ik_real_t)0;
+        return IK_ERR_BADDIM;
     }
 
     //! Compared in the Q32.32 accumulator, not storage type: tol^2 (1e-6 at
@@ -60,9 +77,16 @@ DLS_ITER:
     DLS_NORM:
         //! Rolled, not unrolled: this reduction is nowhere near the critical
         //! path, so II=1 over six cycles (one multiplier) beats six.
+        //
+        //! Masked to the task rows rather than bounded by them: the trip
+        //! count stays six whatever task_dim is, so per-iteration latency
+        //! does not depend on the task. Without the mask a reduced task
+        //! would never converge - the orientation error it is not solving
+        //! for would hold err_sq above tol forever.
         for (int i = 0; i < IK_DOF; i++) {
 #pragma HLS PIPELINE II = 1
-            err_sq += (ik_acc_t)(e[i] * e[i]);
+            ik_acc_t t = (ik_acc_t)(e[i] * e[i]);
+            err_sq += (i < td) ? t : (ik_acc_t)0;
         }
         if (err_sq < tol_sq) {
             st = IK_OK;
@@ -70,8 +94,17 @@ DLS_ITER:
         }
 
         //! Two products per iteration, one shared mm::multiply() call site:
-        //! s=0  A = J J^T (+ lambda^2 I), solved for u
-        //! s=1  DQ = J^T u
+        //! s=0  A = J_t J_t^T (+ lambda^2 I), td x td, solved for u
+        //! s=1  DQ = J_t^T u
+        //
+        //! J_t is the TASK Jacobian: rows 0..td-1 of J. At td = IK_TASK_POS
+        //! those are the three linear-velocity rows, so the task is position
+        //! only and the orientation rows are simply never read - which is
+        //! why a reduced task needs no separate Jacobian and no change to
+        //! ikk::fk_jacobian(). mm::multiply() takes its dimensions at
+        //! runtime and visits only the m x n block asked for, so the
+        //! narrowing is free; spd::factor() pads back to 6x6 with identity,
+        //! so the solve costs the same either way.
         //! A is SPD by construction (that's what the damping buys), so u
         //! solves A u = e via LDL^T - no pivoting, no explicit inverse. See
         //! spd.hpp for why this replaced a Gauss-Jordan inverse.
@@ -90,9 +123,16 @@ DLS_ITER:
         ik_real_t stageB[IK_MAT_MAX][IK_MAT_MAX];
         ik_real_t stageC[IK_MAT_MAX][IK_MAT_MAX];
 
+        //! m and k are per-stage now rather than both IK_DOF, so the task
+        //! Jacobian's shape reaches mm::multiply(). Written as const arrays
+        //! indexed by s, matching mulTa/mulTb/mulN - #pragma lines are not
+        //! macro-expanded, but these are ordinary data and the table form
+        //! keeps the stage definitions in one place.
+        const int mulM[2] = {td, IK_DOF};
+        const int mulK[2] = {IK_DOF, td};
+        const int mulN[2] = {td, 1};
         const bool mulTa[2] = {false, true};
         const bool mulTb[2] = {true, false};
-        const int mulN[2] = {IK_DOF, 1};
 
         bool singular = false;
     MULT:
@@ -108,7 +148,7 @@ DLS_ITER:
                 }
             }
 
-            mm::multiply(stageA, stageB, IK_DOF, IK_DOF, mulN[s], mulTa[s],
+            mm::multiply(stageA, stageB, mulM[s], mulK[s], mulN[s], mulTa[s],
                          mulTb[s], stageC);
 
             if (s == 0) {
@@ -119,7 +159,7 @@ DLS_ITER:
                     for (int c = 0; c < IK_MAT_MAX; c++) {
 #pragma HLS UNROLL
                         A[r][c] =
-                            (r == c && r < IK_DOF)
+                            (r == c && r < td)
                                 ? (ik_real_t)((ik_acc_t)stageC[r][c] + lam_sq)
                                 : stageC[r][c];
                     }
@@ -129,7 +169,7 @@ DLS_ITER:
                 //! data-dependent exit to a kernel whose latency is the thing
                 //! under measurement. s=1 still runs; its result is discarded.
                 ik_real_t uvec[IK_MAT_MAX];
-                if (spd::solve(A, IK_DOF, e, uvec) != IK_OK)
+                if (spd::solve(A, td, e, uvec) != IK_OK)
                     singular = true;
 
             DLS_UVEC:
@@ -208,7 +248,7 @@ DLS_ITER:
 extern "C" void ik_dls_kernel(const ik_word_t pose[IK_DOF],
                               const ik_word_t q_seed[IK_DOF], ik_word_t lambda,
                               ik_word_t tol, int max_iter, ik_word_t step_max,
-                              ik_word_t q[IK_DOF], int* iters,
+                              int task_dim, ik_word_t q[IK_DOF], int* iters,
                               ik_word_t* resid, int* status) {
 #pragma HLS INTERFACE s_axilite port = pose bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = q_seed bundle = CTRL
@@ -216,6 +256,7 @@ extern "C" void ik_dls_kernel(const ik_word_t pose[IK_DOF],
 #pragma HLS INTERFACE s_axilite port = tol bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = max_iter bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = step_max bundle = CTRL
+#pragma HLS INTERFACE s_axilite port = task_dim bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = q bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = iters bundle = CTRL
 #pragma HLS INTERFACE s_axilite port = resid bundle = CTRL
@@ -241,7 +282,7 @@ DLS_INQ:
     ik_real_t qr[IK_DOF], rr;
     int it = 0;
     int st = iks::dls(Rd, pd, qs, ik_from_word(lambda), ik_from_word(tol),
-                      max_iter, ik_from_word(step_max), qr, &it, &rr);
+                      max_iter, ik_from_word(step_max), task_dim, qr, &it, &rr);
 
 DLS_OUT:
     for (int i = 0; i < IK_DOF; i++) {

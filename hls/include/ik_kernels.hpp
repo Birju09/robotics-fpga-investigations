@@ -22,12 +22,18 @@ namespace iks {
     //! @param step_max Trust region: bound on |dq|_inf per iteration, radians.
     //! 0 disables the clamp. Scaled by a power of two, so the
     //! effective bound is (step_max/2, step_max] - see ik_config.hpp.
-    //! @param resid Final task-space residual (2-norm, Q16.16).
-    //! Returns IK_OK, IK_ERR_NO_CONV, or IK_ERR_SINGULAR.
+    //! @param task_dim Task rows solved against: IK_TASK_FULL (6, full pose)
+    //! or IK_TASK_POS (3, position only, orientation free).
+    //! Anything else returns IK_ERR_BADDIM. See the task
+    //! dimension block in ik_config.hpp.
+    //! @param resid Final task-space residual (2-norm, Q16.16) over the TASK
+    //! rows only - at IK_TASK_POS this is a position error in
+    //! metres and says nothing about orientation.
+    //! Returns IK_OK, IK_ERR_NO_CONV, IK_ERR_SINGULAR, or IK_ERR_BADDIM.
     int dls(const ik_real_t Rd[3][3], const ik_real_t pd[3],
             const ik_real_t q_seed[IK_DOF], ik_real_t lambda, ik_real_t tol,
-            int max_iter, ik_real_t step_max, ik_real_t q[IK_DOF], int* iters,
-            ik_real_t* resid);
+            int max_iter, ik_real_t step_max, int task_dim,
+            ik_real_t q[IK_DOF], int* iters, ik_real_t* resid);
 
 }  // namespace iks
 
@@ -45,7 +51,7 @@ extern "C" void ik_analytic_kernel(const ik_word_t pose[IK_DOF], int cfg,
 extern "C" void ik_dls_kernel(const ik_word_t pose[IK_DOF],
                               const ik_word_t q_seed[IK_DOF], ik_word_t lambda,
                               ik_word_t tol, int max_iter, ik_word_t step_max,
-                              ik_word_t q[IK_DOF], int* iters,
+                              int task_dim, ik_word_t q[IK_DOF], int* iters,
                               ik_word_t* resid, int* status);
 //! @}
 
