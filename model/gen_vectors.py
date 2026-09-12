@@ -10,10 +10,12 @@ signed decimal so the C++ side can read with a plain istream):
   fk.txt            q[6]  T[12]            (row-major 3x4)
   ik_analytic.txt   pose[6] cfg  q_gold[6]  |sin(gamma)|  root/rho
   ik_dls.txt        pose[6] qseed[6]  q_gold[6] iters_gold
+  coll.txt          q[6]  d_min  pair  wa[3] wb[3]
 """
 
 import os
 import numpy as np
+import collision as COLL
 import ik_model as M
 
 OUT = os.path.join(os.path.dirname(__file__), "..", "hls", "tb", "vectors")
@@ -158,6 +160,37 @@ def gen_fk(n=128, path="fk.txt"):
         T = M.fk(q)
         lines.append(row(q, T[:3, :4]))
     write(path, lines)
+
+
+def gen_coll(n=256, path="coll.txt"):
+    """
+    Capsule clearance, its witness points, and the achieving pair.
+
+    Sampled over the FULL joint range rather than a "valid" subset: the
+    kernel has to be right where the arm interferes with itself, and that is
+    exactly the region a reachability-filtered sample would exclude. The
+    fraction of the sample that is in collision is printed, because a table
+    with no negative clearances would not test the sign path at all.
+
+    `pair` is an index into IK_COLL_PAIRS and is compared exactly - a
+    different pair achieving the same distance is a real disagreement about
+    which pair is closest, not a rounding difference.
+    """
+    caps = COLL.capsules()
+    pairs = COLL.capsule_pairs(caps)
+    lines = []
+    n_neg = 0
+    while len(lines) < n:
+        q = q_arr(rng.uniform(QLIM[:, 0], QLIM[:, 1], size=6))
+        d, info = COLL.min_clearance(q, caps, pairs)
+        if info is None or info["normal"] is None:
+            continue        # exact crossing: witness direction undefined
+        k = pairs.index(info["pair"])
+        n_neg += int(d < 0.0)
+        lines.append(row(q, [d]) + f" {k} " + row(info["wa"], info["wb"]))
+    write(path, lines)
+    print(f"      {n_neg}/{n} in collision (negative clearance), "
+          f"{len(pairs)} pairs checked")
 
 
 def gen_ik_analytic(n=256, path="ik_analytic.txt"):
@@ -648,5 +681,6 @@ if __name__ == "__main__":
     gen_fk()
     gen_ik_analytic()
     gen_ik_dls()
+    gen_coll()
     gen_c_header()
     print("done.")

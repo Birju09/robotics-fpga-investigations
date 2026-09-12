@@ -145,6 +145,30 @@ def test_seg_dist_bruteforce(n=2000, samples=400):
         off = rng.uniform(-1.0, 1.0, size=3)
         cases.append(np.array([p0, p0 + d, p0 + off, p0 + off + d]))
         cases.append(np.array([p0, p0 + d, p0 + 2.0 * d, p0 + 3.0 * d]))
+    # NEAR-parallel, swept across the whole range of small angles.
+    #
+    # This block is a regression guard, not padding. The first version of
+    # coll::seg_seg() declared |a e - b b| < IK_PIVOT_EPS "parallel" and
+    # forced s = 0. Since a e - b b = a e sin^2(theta), that threshold sits
+    # around 3 degrees off parallel, and the forced s reported clearances up
+    # to 21 mm LARGER than the truth - a solver would be told it was clear
+    # when it was not. Uniformly random segment pairs are almost never that
+    # close to parallel, so nothing else here caught it.
+    #
+    # worst_over is what fails: any threshold-based shortcut in the clamp
+    # cascade shows up as the closed form exceeding brute force.
+    for _ in range(240):
+        p0 = rng.uniform(-1.0, 1.0, size=3)
+        d = rng.uniform(-1.0, 1.0, size=3)
+        ang = 10.0 ** rng.uniform(-6.0, -1.0)      # 1e-6 .. 0.1 rad
+        perp = np.cross(d, rng.uniform(-1.0, 1.0, size=3))
+        perp /= max(np.linalg.norm(perp), 1e-30)
+        d2 = d + ang * np.linalg.norm(d) * perp
+        q0 = p0 + rng.uniform(-1.0, 1.0, size=3) * 0.3
+        # both overlapping and offset along the shared direction, since the
+        # failure depends on where the true closest point falls
+        cases.append(np.array([p0, p0 + d, q0, q0 + d2]))
+        cases.append(np.array([p0, p0 + d, q0 + 0.9 * d, q0 + 0.9 * d + d2]))
     # exactly touching, at an endpoint and in the interior
     for _ in range(60):
         p0, p1, q1 = rng.uniform(-1.0, 1.0, size=(3, 3))
@@ -333,8 +357,17 @@ if __name__ == "__main__":
     over, gap, agree, wit, ncase = test_seg_dist_bruteforce()
     print(f"\n[Capsule distance]  {ncase} segment pairs "
           f"(incl. degenerate: zero-length, parallel, touching)")
+    # Bound is one Q16.16 LSB (1.53e-5), not zero. The model's own
+    # denominator guard (eps = 1e-12) does bite at the extreme end of the
+    # near-parallel sweep, around 1e-6 rad, and overestimates by ~5e-7 m -
+    # sub-micron, 0.03 of an LSB, invisible to the kernel this validates.
+    # The failure this test exists to catch is three orders of magnitude
+    # larger: a coarse threshold in the clamp cascade overestimated by 21 mm.
+    # Bounding at an LSB catches that and does not flag arithmetic that
+    # cannot reach the fixed-point result.
+    LSB = 1.0 / 65536.0
     print(f"  closed form above brute force : {over:.3e}   "
-          f"{'PASS' if over < 1e-9 else 'FAIL'}")
+          f"{'PASS' if over < LSB else 'FAIL'}  (bound 1 LSB = {LSB:.2e})")
     print(f"  brute force above closed form : {gap:.3e}   "
           f"(grid resolution, not an error)")
     print(f"  vs ik_model._seg_dist         : {agree:.3e}   "

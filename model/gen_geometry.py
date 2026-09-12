@@ -71,6 +71,8 @@ def capsule_block(rb):
     fr = ", ".join(str(c.frame) for c in caps)
     rr = ", ".join(c_double(c.radius) for c in caps)
     pr = ", ".join("{" + f"{i}, {j}" + "}" for i, j in pairs)
+    lsq = ", ".join(c_double(c.length ** 2) for c in caps)
+    ilsq = ", ".join(c_double(1.0 / c.length ** 2) for c in caps)
 
     return f"""
 //! ---------------- capsule collision model ----------------
@@ -114,6 +116,17 @@ static const double IK_CAP_PB[IK_CAP_COUNT][3] = {{
 //! Jacobian's non-zero columns are joints 0 .. IK_CAP_FRAME-1.
 static const int IK_CAP_FRAME[IK_CAP_COUNT] = {{{fr}}};
 static const double IK_CAP_RADIUS[IK_CAP_COUNT] = {{{rr}}};
+
+//! Squared segment length and its reciprocal, per capsule.
+//
+//! These are CONSTANTS because a capsule is rigid: |pb - pa| does not depend
+//! on q. That removes two of the three reciprocals a segment-segment query
+//! would otherwise need - the a = d1.d1 and e = d2.d2 divisors in the clamp
+//! cascade are table lookups, and only the denom = a*e - b*b divisor is
+//! computed at run time. On this arm that is 9 runtime reciprocals per
+//! query instead of 27.
+static const double IK_CAP_LEN_SQ[IK_CAP_COUNT] = {{{lsq}}};
+static const double IK_CAP_INV_LEN_SQ[IK_CAP_COUNT] = {{{ilsq}}};
 
 //! Capsule index pairs to check. Fixed at generation time, so the collision
 //! kernel's trip count is a compile-time constant and its latency does not

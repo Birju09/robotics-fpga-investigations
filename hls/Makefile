@@ -21,7 +21,7 @@
 #
 # Override the device with:  make PART=xc7z020clg400-1 all
 
-KERNELS := matmul matinv ik_analytic ik_dls
+KERNELS := matmul matinv ik_analytic ik_dls coll
 BUILD   := build
 VXX     := v++
 VRUN    := vitis-run
@@ -74,6 +74,7 @@ TOP-matmul      := mat_mul_kernel
 TOP-matinv      := mat_inv_kernel
 TOP-ik_analytic := ik_analytic_kernel
 TOP-ik_dls      := ik_dls_kernel
+TOP-coll        := coll_dist_kernel
 
 reports:
 	@echo "=================================================================="
@@ -85,6 +86,7 @@ reports:
 	    matinv)      top=$(TOP-matinv) ;; \
 	    ik_analytic) top=$(TOP-ik_analytic) ;; \
 	    ik_dls)      top=$(TOP-ik_dls) ;; \
+	    coll)        top=$(TOP-coll) ;; \
 	  esac; \
 	  r=$$(find $(BUILD)/$$k -name "$${top}_csynth.rpt" 2>/dev/null | head -1); \
 	  if [ -n "$$r" ]; then \

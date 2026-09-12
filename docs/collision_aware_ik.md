@@ -354,6 +354,14 @@ clearance term exists, that implicit dependency should be stated in
 | capsule–box (OBB) | segment vs OBB, clamp in box frame | 0 | fixed |
 | capsule–cylinder | no clean closed form | — | — |
 
+**The division count came out lower than this table says, for a reason worth
+recording.** A capsule is rigid, so `|pb − pa|` does not depend on `q`: the
+`a = d₁·d₁` and `e = d₂·d₂` divisors in the clamp cascade are *compile-time
+constants*, and `gen_geometry.py` emits both them and their reciprocals
+(`IK_CAP_LEN_SQ`, `IK_CAP_INV_LEN_SQ`). Only the `denom = ae − b²` divisor is
+computed at run time. On the PUMA that is **9 runtime reciprocals per query
+instead of 27.**
+
 **Avoid capsule–cylinder.** Approximate a cylinder obstacle by a capsule
 (conservative if the radius is kept — the spherical caps only add volume) or
 by a box. Keeping the primitive-pair set to four cases bounds the mux depth
@@ -372,10 +380,35 @@ Three notes specific to this codebase:
    that precedent exactly. Result: **the collision layer adds a compile-time
    constant to the iteration cost**, which is the property the whole project
    is organised around.
-2. **The division reuses existing hardware.** `_seg_dist`'s
-   `denom = ae − b²` needs one reciprocal; `ikm::recip()` is already built
-   and already validated against the `ap_fixed` divider in `tb_spd.cpp`. The
-   near-parallel-segments guard has an established idiom in `IK_PIVOT_EPS`.
+2. **The division does *not* reuse `ikm::recip()`, and the earlier draft of
+   this document was wrong to say it should.** `recip()` is built for
+   `spd::solve()`'s pivots, which damping bounds below; `denom = ae − b²
+   = ae·sin²θ` has no such bound and `1/denom` overflows Q16.16 as soon as
+   `denom < 3×10⁻⁵`. The first implementation guarded that the way this
+   document suggested — declare `|denom| < IK_PIVOT_EPS` "parallel" and force
+   `s = 0` — and **it was wrong in the dangerous direction.** At
+   `IK_PIVOT_EPS = 10⁻⁴` that threshold sits about 3° off parallel, and the
+   forced `s` reported clearances **up to 21 mm larger than the truth** —
+   *clear when it is not*. It cost 1.3×10⁻³ of error in the float host
+   build, where the answer should have matched the model to 10⁻¹⁵.
+
+   The fix needs no threshold at all: **compare `|num|` against `|denom|`
+   first.** If `|num| ≥ |denom|` then `|s| ≥ 1`, the clamp is the answer and
+   no division happens; what remains has `|s| < 1` by construction, so the
+   divider is only ever asked for a value it can represent. Exact in both
+   builds, so the float reference and the Q16.16 kernel take the same branch
+   — the same property the trust region's power-of-two halving was chosen
+   for. Float-build error fell to 1.5×10⁻⁵, one LSB, which is the golden
+   vector file's own quantisation.
+
+   `validate.py` now sweeps 480 deliberately near-parallel segment pairs
+   (10⁻⁶ to 0.1 rad) against brute force, because uniformly random pairs are
+   almost never near-parallel and nothing else caught this.
+
+   A related trap in the same cascade: the degeneracy test for a zero-length
+   segment must **not** use `IK_PIVOT_EPS` either. This arm's shortest
+   capsule is the `a3` elbow offset with `a = 4.12×10⁻⁴` — within 4× of being
+   declared degenerate and collapsed to a point.
 3. **Squared clearances must live in `ik_acc_t`.** A 1 mm margin is 65 LSBs
    in Q16.16 — fine — but its *square* is 4×10⁻³ LSB, i.e. zero. This is the
    same trap the repo already documented for `tol_sq`: "1e-6 at default is
@@ -694,8 +727,33 @@ Branch: `nullspace-collision-ik`.
    `ik_model._seg_dist` (0.0), analytic vs numerical `∂d/∂q` (6.9×10⁻¹¹ over
    370 of 400 samples, the rest skipped at genuine non-differentiabilities),
    and the damped-projector identity (6×10⁻¹⁵).
-4. **NEXT — Stage 0, `coll_dist_kernel`** as a standalone packaged IP,
-   synthesised and timed. *This is the go/no-go for the part.* Also closes
+4. **WRITTEN, NOT YET SYNTHESISED — Stage 0, `coll_dist_kernel`.**
+   `hls/src/coll.cpp`, `hls/include/coll.hpp`, `hls/cfg/coll.cfg`, wired into
+   `hls/Makefile`'s `KERNELS`, with `tb_coll.cpp` in the host regression
+   against 256 golden vectors from `gen_vectors.py` (49 of them genuinely in
+   collision, so the sign path is exercised). `ikk::dh_step()` is no longer
+   static, so the collision kernel walks the same DH chain rather than
+   carrying a second copy of the convention.
+
+   Host regression: `d_min` 1.5×10⁻⁵ worst (one LSB), witness points
+   consistent with the reported distance to 1.9×10⁻⁵, sign 256/256,
+   six degenerate-geometry cases pass. Achieving pair agrees with the
+   reference on 253/256 and the witness points on the same 253 — both
+   reported rather than asserted, because both are genuinely
+   under-determined (pairs tie structurally where `link3_d` and `link3_a`
+   meet at a skeleton node; witness points are non-unique on parallel
+   segments). `d_min` is the gate, and it holds on the cases where the pair
+   is broken the other way.
+
+   **The go/no-go itself is still open: this has never been near Vitis.**
+   `make -C hls syn-coll` then `make -C hls reports` is the missing step, and
+   until it runs, every area number in §7 is an estimate. Two things to check
+   in that report: the total against the ~4% of LUTs §7 says are spare, and
+   that the reported latency is a single figure rather than a range — a range
+   would mean a data-dependent exit crept in, which for this kernel is a bug
+   and not a finding.
+
+   Still to do in this step: use the kernel (or the model) to close
    STATUS.md's open item that the random 48-pose table has never been checked
    against the self-collision proxy (~5% of a uniform `qlim` sample fails
    it).

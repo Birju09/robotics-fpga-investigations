@@ -137,6 +137,17 @@ static const double IK_CAP_PB[IK_CAP_COUNT][3] = {
 static const int IK_CAP_FRAME[IK_CAP_COUNT] = {1, 2, 3, 3, 4, 6};
 static const double IK_CAP_RADIUS[IK_CAP_COUNT] = {0.09, 0.075, 0.07, 0.07, 0.055, 0.04};
 
+//! Squared segment length and its reciprocal, per capsule.
+//
+//! These are CONSTANTS because a capsule is rigid: |pb - pa| does not depend
+//! on q. That removes two of the three reciprocals a segment-segment query
+//! would otherwise need - the a = d1.d1 and e = d2.d2 divisors in the clamp
+//! cascade are table lookups, and only the denom = a*e - b*b divisor is
+//! computed at run time. On this arm that is 9 runtime reciprocals per
+//! query instead of 27.
+static const double IK_CAP_LEN_SQ[IK_CAP_COUNT] = {0.45131523999999995, 0.18645124000000002, 0.022515002499999996, 0.00041208999999999994, 0.18645124000000002, 0.00319225};
+static const double IK_CAP_INV_LEN_SQ[IK_CAP_COUNT] = {2.2157461378880097, 5.36333252597301, 44.41482962304802, 2426.6543716178508, 5.36333252597301, 313.25867334951835};
+
 //! Capsule index pairs to check. Fixed at generation time, so the collision
 //! kernel's trip count is a compile-time constant and its latency does not
 //! depend on the configuration.

@@ -16,7 +16,9 @@
 //! ik_geometry.hpp is generated but IS checked in, so a clone builds.  This
 //! catches the case where a consumer here needs something a stale copy does
 //! not define.  Regenerate with: python3 model/gen_geometry.py
-#if !defined(IK_GEOMETRY_VERSION) || IK_GEOMETRY_VERSION < 1
+//! Version 2 added the capsule tables (IK_CAP_*, IK_COLL_PAIRS) that
+//! coll.cpp consumes.
+#if !defined(IK_GEOMETRY_VERSION) || IK_GEOMETRY_VERSION < 2
 #error \
     "hls/include/ik_geometry.hpp is missing or out of date. It is generated from the robot definition; run: python3 model/gen_geometry.py"
 #endif
@@ -311,5 +313,9 @@
 #define IK_ERR_NO_CONV 2   //! DLS hit the iteration cap
 #define IK_ERR_SINGULAR 3  //! matrix inversion found a null pivot
 #define IK_ERR_BADDIM 4    //! requested dimension exceeds IK_MAT_MAX
+//! Capsule clearance is negative, i.e. the link capsules interpenetrate.
+//! A flag, not a refusal: coll_dist_kernel still returns a valid signed
+//! d_min, and the sign is the information.
+#define IK_ERR_COLLISION 5
 
 #endif  //! IK_CONFIG_HPP

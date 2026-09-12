@@ -14,6 +14,17 @@
 
 namespace ikk {
 
+    //! One standard-DH step for joint i: [R|p] <- [R|p] * A_i(theta).
+    //!
+    //! Exposed (rather than kept static in kinematics.cpp) so coll.cpp can
+    //! walk the same chain to place capsules, instead of duplicating the DH
+    //! convention - a second copy of it would be exactly the kind of silent
+    //! divergence ik_geometry.hpp is generated to prevent.
+    //!
+    //! INLINE, so each call site gets its own copy: coll_dist_kernel is a
+    //! standalone IP and needs its own chain hardware regardless.
+    void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3]);
+
     //! R = Rz(yaw) Ry(pitch) Rx(roll), ZYX convention. Angles in radians.
     void rpy_to_rot(ik_real_t roll, ik_real_t pitch, ik_real_t yaw,
                     ik_real_t R[3][3]);

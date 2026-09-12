@@ -77,7 +77,9 @@ DH_WB:
     }
 }
 
-static void dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3]) {
+//! Not static: declared in kinematics.hpp so coll.cpp can walk the same
+//! chain rather than reimplementing the DH convention. Still INLINE.
+void ikk::dh_step(int i, ik_real_t th, ik_real_t R[3][3], ik_real_t p[3]) {
 #pragma HLS INLINE
     ik_real_t ct, st;
     ikm::sincos(th, st, ct);
